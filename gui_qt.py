@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
     QToolTip,
     QCheckBox,
     QTabWidget,
+    QSplitter,
     QFileDialog,
     QMessageBox,
 )
@@ -316,14 +317,22 @@ class MainWindow(QMainWindow):
             myappid = "proxy.printer"  # arbitrary string
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
-        window_layout = QHBoxLayout()
-        window_layout.addWidget(tabs)
-        window_layout.addWidget(options_container)
+        splitter = QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(tabs)
+        splitter.addWidget(options_container)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 1)
 
-        window_area = QWidget()
-        window_area.setLayout(window_layout)
+        sidebar_width = max(
+            options.sizeHint().width(),
+            options.minimumSizeHint().width(),
+            320,
+        )
+        options_container.setMinimumWidth(min(sidebar_width, 600))
+        splitter.setSizes([max(sidebar_width * 2, 900), sidebar_width])
 
-        self.setCentralWidget(window_area)
+        self.setCentralWidget(splitter)
 
         self._scroll_area = scroll_area
         self._options = options
@@ -1748,7 +1757,7 @@ class OptionsWidget(QWidget):
         layout.addStretch()
 
         self.setLayout(layout)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         self._print_options = print_options
         self._card_options = card_options
