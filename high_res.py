@@ -846,20 +846,21 @@ def invalidate_cached_card_artifacts(print_dict: dict, image_dir: str, card_name
                     except OSError:
                         pass
 
+    cache_data = None
     img_cache_path = print_dict.get("img_cache")
     if img_cache_path and os.path.exists(img_cache_path):
         try:
-            with open(img_cache_path, "r") as fp:
+            with open(img_cache_path, "r", encoding="utf-8") as fp:
                 cache_data = json.load(fp)
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             cache_data = None
 
-        if isinstance(cache_data, dict) and card_name in cache_data:
-            del cache_data[card_name]
-            try:
-                util.write_json_atomic(img_cache_path, cache_data, ensure_ascii=False)
-            except OSError:
-                pass
+    if isinstance(cache_data, dict) and card_name in cache_data:
+        del cache_data[card_name]
+        try:
+            util.write_json_atomic(img_cache_path, cache_data, ensure_ascii=False)
+        except OSError:
+            pass
 
 
 def maybe_find_matching_backside(

@@ -119,7 +119,7 @@ def init_dict(print_dict, img_dict, warn_fn=None):
     img_cache = print_dict["img_cache"]
     if os.path.exists(img_cache):
         try:
-            with open(img_cache, "r") as fp:
+            with open(img_cache, "r", encoding="utf-8") as fp:
                 loaded_img_dict = json.load(fp)
                 img_dict.clear()
                 for key, value in loaded_img_dict.items():
@@ -155,7 +155,7 @@ def init_images(print_dict, img_dict, print_fn):
 
     # setup image previews
     img_cache = print_dict["img_cache"]
-    if image.need_cache_previews(crop_dir, img_dict):
+    if image.need_cache_previews(crop_dir, img_dict, image_dir):
         image.cache_previews(img_cache, image_dir, crop_dir, print_fn, img_dict)
 
 
@@ -208,7 +208,7 @@ def clear_old_cards(print_dict, img_dict):
 def load(print_dict, img_dict, json_path, print_fn, warn_fn=None):
     loaded_successfully = False
     try:
-        with open(json_path, "r") as fp:
+        with open(json_path, "r", encoding="utf-8") as fp:
             loaded_print_dict = json.load(fp)
             print_dict.clear()
             for key, value in loaded_print_dict.items():

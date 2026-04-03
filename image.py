@@ -314,20 +314,24 @@ def to_bytes(file_or_bytes, resize=None):
     return image_to_bytes(img), (cur_width, cur_height)
 
 
-def need_cache_previews(crop_dir, img_dict):
+def need_cache_previews(crop_dir, img_dict, image_dir=None):
     crop_list = list_image_files(crop_dir)
+    source_list = list_image_files(image_dir) if image_dir is not None else []
+    valid_images = set(crop_list) | set(source_list)
 
     for img in crop_list:
         if img not in img_dict.keys():
             return True
 
     for img, value in img_dict.items():
+        if img not in valid_images:
+            return True
+
         if (
             "size" not in value
             or "thumb" not in value
             or "uncropped" not in value
             or "effective_dpi" not in value
-            or img not in crop_list
         ):
             return True
 
@@ -337,8 +341,9 @@ def need_cache_previews(crop_dir, img_dict):
 def cache_previews(file, image_dir, crop_dir, print_fn, data):
     deleted_cards = []
     for img in data.keys():
-        fn = os.path.join(crop_dir, img)
-        if not os.path.exists(fn):
+        crop_path = os.path.join(crop_dir, img)
+        source_path = os.path.join(image_dir, img)
+        if not os.path.exists(crop_path) and not os.path.exists(source_path):
             deleted_cards.append(img)
 
     for img in deleted_cards:

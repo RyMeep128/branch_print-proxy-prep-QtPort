@@ -41,4 +41,5 @@ def main():
     app.close()
 
 if __name__ == "__main__":
+    gui_qt.install_exception_handlers()
     main()

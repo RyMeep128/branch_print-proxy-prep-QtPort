@@ -3,6 +3,10 @@ import re
 import sys
 import math
 import json
+import traceback
+import datetime
+import platform
+import threading
 import functools
 import subprocess
 from enum import Enum
@@ -61,6 +65,124 @@ from util import *
 from config import *
 from constants import *
 import fallback_image as fallback
+
+_showing_exception_dialog = False
+
+
+def _default_crash_log_path():
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    crash_dir = os.path.join(cwd, "crash_logs")
+    os.makedirs(crash_dir, exist_ok=True)
+    return os.path.join(crash_dir, f"print-proxy-prep-crash-{timestamp}.log")
+
+
+def format_exception_report(exc_type, exc_value, exc_traceback, context=None):
+    lines = [
+        "Print Proxy Prep Crash Report",
+        f"Timestamp: {datetime.datetime.now().isoformat()}",
+        f"Platform: {platform.platform()}",
+        f"Python: {sys.version}",
+        f"Working Directory: {cwd}",
+    ]
+    if context:
+        lines.append(f"Context: {context}")
+    lines.extend(
+        [
+            "",
+            "Exception:",
+            "".join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def show_exception_dialog(exc_type, exc_value, exc_traceback, context=None, parent=None):
+    global _showing_exception_dialog
+
+    if _showing_exception_dialog:
+        return
+
+    _showing_exception_dialog = True
+    temp_app = None
+    try:
+        app = QApplication.instance()
+        if app is None:
+            temp_app = QApplication(sys.argv)
+            app = temp_app
+
+        parent = parent or getattr(app, "_window", None)
+        report = format_exception_report(exc_type, exc_value, exc_traceback, context)
+        summary = f"{exc_type.__name__}: {exc_value}"
+
+        dialog = QMessageBox(parent)
+        dialog.setIcon(QMessageBox.Icon.Critical)
+        dialog.setWindowTitle("Unexpected Error")
+        dialog.setText("Print Proxy Prep hit an unexpected error.")
+        dialog.setInformativeText(summary)
+        dialog.setDetailedText(report)
+
+        save_button = dialog.addButton(
+            "Save Crash Log", QMessageBox.ButtonRole.ActionRole
+        )
+        close_button = dialog.addButton(QMessageBox.StandardButton.Close)
+        dialog.setDefaultButton(close_button)
+        dialog.exec()
+
+        if dialog.clickedButton() == save_button:
+            default_path = _default_crash_log_path()
+            selected_path = file_dialog(
+                parent,
+                "Save Crash Log",
+                default_path,
+                "Log Files (*.log);;Text Files (*.txt);;All Files (*)",
+                FileDialogType.Save,
+            )
+            if selected_path is None:
+                selected_path = default_path
+            if not os.path.splitext(selected_path)[1]:
+                selected_path += ".log"
+            try:
+                with open(selected_path, "w", encoding="utf-8") as fp:
+                    fp.write(report)
+                QMessageBox.information(
+                    parent,
+                    "Crash Log Saved",
+                    f"The crash log was saved to:\n\n{selected_path}",
+                )
+            except OSError as exc:
+                QMessageBox.warning(
+                    parent,
+                    "Crash Log Save Failed",
+                    f"The crash log could not be saved.\n\n{exc}",
+                )
+    finally:
+        _showing_exception_dialog = False
+        if temp_app is not None:
+            temp_app.quit()
+
+
+def install_exception_handlers():
+    def excepthook(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        show_exception_dialog(exc_type, exc_value, exc_traceback)
+
+    sys.excepthook = excepthook
+
+    if hasattr(threading, "excepthook"):
+        def thread_excepthook(args):
+            if issubclass(args.exc_type, KeyboardInterrupt):
+                return
+            context = f"Background thread: {getattr(args.thread, 'name', 'unknown')}"
+            show_exception_dialog(
+                args.exc_type,
+                args.exc_value,
+                args.exc_traceback,
+                context=context,
+            )
+
+        threading.excepthook = thread_excepthook
 
 
 class PrintProxyPrepApplication(QApplication):
@@ -184,13 +306,20 @@ def popup(window, middle_text, debug_thread):
             class WorkThread(QtCore.QThread):
                 _refresh = QtCore.pyqtSignal(str)
 
+                def __init__(self):
+                    super().__init__()
+                    self._exception_info = None
+
                 def run(self):
                     if debug_thread:
                         import debugpy
 
                         debugpy.debug_this_thread()
 
-                    work()
+                    try:
+                        work()
+                    except Exception:
+                        self._exception_info = sys.exc_info()
 
             work_thread = WorkThread()
 
@@ -201,6 +330,12 @@ def popup(window, middle_text, debug_thread):
             self._thread = work_thread
             self.exec()
             self._thread = None
+
+            if work_thread._exception_info is not None:
+                exc_type, exc_value, exc_traceback = work_thread._exception_info
+                if hasattr(exc_value, "add_note"):
+                    exc_value.add_note(f"Background task failed: {middle_text}")
+                raise exc_value.with_traceback(exc_traceback)
 
         def showEvent(self, event):
             super().showEvent(event)

@@ -96,3 +96,22 @@ def test_cropper_still_crops_non_scryfall_images(monkeypatch, tmp_path):
 
     assert len(crop_calls) == 1
     assert writes == [(str(crop_dir / "card-a.png"), "cropped-image")]
+
+
+def test_need_cache_previews_accepts_cached_source_metadata(monkeypatch):
+    monkeypatch.setattr(
+        image,
+        "list_image_files",
+        lambda folder: ["card-a.png"] if folder.endswith("crop") else ["card-a.png"],
+    )
+
+    img_dict = {
+        "card-a.png": {
+            "size": [248, 346],
+            "thumb": {"size": [112, 156], "data": "thumb"},
+            "uncropped": {"size": [186, 260], "data": "uncropped"},
+            "effective_dpi": 300,
+        }
+    }
+
+    assert image.need_cache_previews("images/crop", img_dict, "images") is False

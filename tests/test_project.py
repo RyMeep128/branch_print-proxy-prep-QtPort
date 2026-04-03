@@ -88,6 +88,57 @@ def test_init_dict_keeps_cards_with_source_files_even_if_crop_is_missing(monkeyp
     }
 
 
+def test_init_dict_loads_utf8_cache_keys_without_mojibake(monkeypatch, tmp_path):
+    image_dir = tmp_path / "images"
+    crop_dir = image_dir / "crop"
+    img_cache = tmp_path / "img.cache"
+    unicode_name = "scryfall_oarc_10★_every-hope-shall-vanish.png"
+
+    image_dir.mkdir()
+    crop_dir.mkdir()
+    img_cache.write_text(
+        json.dumps(
+            {
+                unicode_name: {
+                    "size": [1, 2],
+                    "thumb": {},
+                    "uncropped": {},
+                    "effective_dpi": 300,
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_list_image_files(folder):
+        if folder == str(crop_dir):
+            return [unicode_name]
+        if folder == str(image_dir):
+            return [unicode_name]
+        return []
+
+    monkeypatch.setattr(project.image, "init_image_folder", lambda *_args: None)
+    monkeypatch.setattr(project.image, "list_image_files", fake_list_image_files)
+
+    print_dict = {
+        "image_dir": str(image_dir),
+        "img_cache": str(img_cache),
+        "cards": {unicode_name: 1},
+        "backsides": {},
+        "backside_short_edge": {},
+        "oversized": {},
+        "card_metadata": {},
+        "high_res_front_overrides": {},
+        "bleed_edge": "0",
+    }
+    img_dict = {}
+
+    project.init_dict(print_dict, img_dict)
+
+    assert unicode_name in img_dict
+
+
 def test_init_dict_backfills_scryfall_metadata_from_filename(monkeypatch, tmp_path):
     image_dir = tmp_path / "images"
     crop_dir = image_dir / "crop"
