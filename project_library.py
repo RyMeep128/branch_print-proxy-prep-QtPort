@@ -423,14 +423,26 @@ def clear_thumbnail_card(project_id):
 
 def remove_project(project_id):
     data = load_library()
-    before = len(data["projects"])
+    entry = _find_entry(data, project_id)
+    if entry is None:
+        return False
+
+    project_path = os.path.abspath(entry.get("path", ""))
+    image_dir = os.path.abspath(_project_image_dir(project_path)) if project_path else ""
+
+    if image_dir and os.path.isdir(image_dir):
+        shutil.rmtree(image_dir)
+
+    if project_path and os.path.exists(project_path):
+        os.remove(project_path)
+
     data["projects"] = [
-        entry for entry in data["projects"] if entry.get("id") != project_id
+        existing_entry
+        for existing_entry in data["projects"]
+        if existing_entry.get("id") != project_id
     ]
-    if len(data["projects"]) != before:
-        save_library(data)
-        return True
-    return False
+    save_library(data)
+    return True
 
 
 def save_project(project_id, print_dict):

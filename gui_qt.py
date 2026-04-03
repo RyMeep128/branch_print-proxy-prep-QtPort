@@ -271,6 +271,10 @@ class PrintProxyPrepApplication(QApplication):
         if hasattr(self, "_window"):
             self._window.set_project_thumbnail(card_name)
 
+    def clear_project_thumbnail_if_matches(self, card_name):
+        if hasattr(self, "_window"):
+            self._window.clear_project_thumbnail_if_matches(card_name)
+
     def autosave_managed_session(self):
         if hasattr(self, "_window"):
             self._window.autosave_managed_session()
@@ -471,6 +475,52 @@ def load_project_file(application, print_dict, img_dict, json_path, print_fn):
     return loaded_successfully
 
 
+def remove_card_from_project_state(print_dict, card_name):
+    if card_name in print_dict.get("cards", {}):
+        del print_dict["cards"][card_name]
+
+    for key in [
+        "backsides",
+        "backside_short_edge",
+        "oversized",
+        "high_res_front_overrides",
+    ]:
+        values = print_dict.get(key)
+        if isinstance(values, dict) and card_name in values:
+            del values[card_name]
+
+
+def delete_project_with_confirmation(parent, application, project_id, refresh_fn):
+    project_entry = project_library.get_project(project_id)
+    if project_entry is None:
+        refresh_fn()
+        return
+
+    confirm = QMessageBox.question(
+        parent,
+        "Delete Project",
+        (
+            f"Delete '{project_entry.get('display_name', 'Untitled Project')}'?\n\n"
+            "This will permanently delete the saved project file and its project images from disk."
+        ),
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    if confirm != QMessageBox.StandardButton.Yes:
+        return
+
+    try:
+        project_library.remove_project(project_id)
+    except OSError as exc:
+        application.warn_nonfatal(
+            "Delete Project Failed",
+            f"The project could not be fully deleted.\n\n{exc}",
+        )
+        return
+
+    refresh_fn()
+
+
 def project_thumbnail_pixmap(image_path, width=120, height=160):
     pixmap = QPixmap()
     if image_path and os.path.exists(image_path):
@@ -489,7 +539,7 @@ class DeckImportDialog(QDialog):
     def __init__(self, parent, image_dir):
         super().__init__(parent)
 
-        self.setWindowTitle("Import Decklist")
+        self.setWindowTitle("Import Cards")
         self.resize(560, 420)
 
         instructions = QLabel(
@@ -507,8 +557,8 @@ class DeckImportDialog(QDialog):
             "https://archidekt.com/decks/123456/example-deck"
         )
 
-        load_file_button = QPushButton("Load From File")
-        import_button = QPushButton("Import")
+        load_file_button = QPushButton("Choose File")
+        import_button = QPushButton("Import Cards")
         cancel_button = QPushButton("Cancel")
 
         button_row = QHBoxLayout()
@@ -622,13 +672,13 @@ class SettingsDialog(QDialog):
         display_columns = WidgetWithLabel("Display &Columns", display_columns_spin_box)
         display_columns.setToolTip("Number of columns shown in the card grid")
 
-        precropped_checkbox = QCheckBox("Allow Precropped")
+        precropped_checkbox = QCheckBox("Allow Pre-Cropped Images")
         precropped_checkbox.setChecked(CFG.EnableUncrop)
         precropped_checkbox.setToolTip(
             "Allows putting pre-cropped images into images/crop"
         )
 
-        vibrance_checkbox = QCheckBox("Vibrance Bump")
+        vibrance_checkbox = QCheckBox("Boost Color Vibrance")
         vibrance_checkbox.setChecked(CFG.VibranceBump)
         vibrance_checkbox.setToolTip("Requires rerunning cropper")
 
@@ -756,7 +806,7 @@ class HighResPickerDialog(QDialog):
     def __init__(self, parent, print_dict, img_dict, card_name):
         super().__init__(parent)
 
-        self.setWindowTitle("High-Res Front Picker")
+        self.setWindowTitle("Choose Better Front Image")
         self.resize(960, 680)
 
         self._print_dict = print_dict
@@ -778,6 +828,11 @@ class HighResPickerDialog(QDialog):
             f"`{self._context.display_name}`."
         )
         info_text.setWordWrap(True)
+
+        helper_text = QLabel(
+            "Use this only if you want to replace the current front image with a higher-resolution version."
+        )
+        helper_text.setWordWrap(True)
 
         current_override = print_dict.get("high_res_front_overrides", {}).get(
             card_name
@@ -813,12 +868,12 @@ class HighResPickerDialog(QDialog):
         self._min_dpi = min_dpi
         self._max_dpi = max_dpi
 
-        prev_page_button = QPushButton("Previous 60")
+        prev_page_button = QPushButton("Previous 60 Results")
         prev_page_button.setEnabled(False)
         prev_page_button.clicked.connect(self._go_to_previous_page)
         self._prev_page_button = prev_page_button
 
-        next_page_button = QPushButton("Next 60")
+        next_page_button = QPushButton("Next 60 Results")
         next_page_button.setEnabled(False)
         next_page_button.clicked.connect(self._go_to_next_page)
         self._next_page_button = next_page_button
@@ -879,6 +934,7 @@ class HighResPickerDialog(QDialog):
 
         layout = QVBoxLayout()
         layout.addWidget(info_text)
+        layout.addWidget(helper_text)
         layout.addWidget(self._current_source_label)
         layout.addLayout(filters_layout)
         layout.addLayout(pagination_layout)
@@ -1243,6 +1299,32 @@ class EditorPage(QWidget):
         self._print_preview.refresh(print_dict, img_dict)
 
 
+class WorkflowGuideWidget(QGroupBox):
+    def __init__(self):
+        super().__init__()
+
+        self.setTitle("Start Here")
+
+        intro = QLabel(
+            "For most projects, follow these steps from top to bottom."
+        )
+        intro.setWordWrap(True)
+
+        steps = QLabel(
+            "1. Import cards or choose your image folder.\n"
+            "2. Prepare images after adding or changing card files.\n"
+            "3. Check the Preview tab to confirm the pages look right.\n"
+            "4. Save the project so you can come back later.\n"
+            "5. Save PDF when you are ready to export."
+        )
+        steps.setWordWrap(True)
+
+        layout = QVBoxLayout()
+        layout.addWidget(intro)
+        layout.addWidget(steps)
+        self.setLayout(layout)
+
+
 class CardImage(QLabel):
     clicked = QtCore.pyqtSignal()
 
@@ -1340,12 +1422,12 @@ class StackedCardBacksideView(QStackedWidget):
         reset_button.setIcon(
             style.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton)
         )
-        reset_button.setToolTip("Reset Backside to Default")
+        reset_button.setToolTip("Use the default card back")
         reset_button.setFixedWidth(20)
         reset_button.setFixedHeight(20)
         reset_button.clicked.connect(self._backside_reset)
 
-        backside.setToolTip("Choose individual Backside")
+        backside.setToolTip("Choose a custom back for this card")
 
         backside_layout = QHBoxLayout()
         backside_layout.addStretch()
@@ -1438,6 +1520,7 @@ class StackedCardBacksideView(QStackedWidget):
 class CardWidget(QWidget):
     def __init__(self, print_dict, img_dict, card_name):
         super().__init__()
+        self.setMouseTracking(True)
 
         if card_name in img_dict:
             img_data = eval(img_dict[card_name]["data"])
@@ -1446,7 +1529,7 @@ class CardWidget(QWidget):
             img_data = fallback.data
             img_size = fallback.size
         img = CardImage(img_data, img_size)
-        img.setToolTip("Click to browse high-res MPC alternatives")
+        img.setToolTip("Click to choose a higher-resolution front image")
 
         def open_high_res_picker():
             dialog = HighResPickerDialog(self, print_dict, img_dict, card_name)
@@ -1475,11 +1558,11 @@ class CardWidget(QWidget):
         number_edit.setText(str(initial_number))
         number_edit.setFixedWidth(40)
 
-        decrement_button = QPushButton("➖")
-        increment_button = QPushButton("➕")
+        decrement_button = QPushButton("Remove 1")
+        increment_button = QPushButton("Add 1")
 
-        decrement_button.setToolTip("Remove one")
-        increment_button.setToolTip("Add one")
+        decrement_button.setToolTip("Remove one copy")
+        increment_button.setToolTip("Add one copy")
 
         number_layout = QHBoxLayout()
         number_layout.addStretch()
@@ -1493,8 +1576,8 @@ class CardWidget(QWidget):
         number_area.setLayout(number_layout)
         number_area.setFixedHeight(20)
 
-        thumbnail_button = QPushButton("Set Thumb")
-        thumbnail_button.setToolTip("Use this card as the dashboard thumbnail")
+        thumbnail_button = QPushButton("Use as Project Cover")
+        thumbnail_button.setToolTip("Use this card on the project list")
         thumbnail_button.setFixedHeight(24)
 
         def set_project_thumbnail():
@@ -1504,6 +1587,44 @@ class CardWidget(QWidget):
 
         thumbnail_button.clicked.connect(set_project_thumbnail)
         thumbnail_button.setEnabled(card_name is not None)
+
+        delete_button = None
+        if card_name is not None:
+            delete_button = QPushButton("X", self)
+            delete_button.setFixedSize(24, 24)
+            delete_button.setToolTip("Remove this card from the project")
+            delete_button.setStyleSheet(
+                "QPushButton {"
+                "background-color: #8d2d2d; color: white; font-weight: bold;"
+                "border: 1px solid #b85555; border-radius: 12px;"
+                "}"
+                "QPushButton:hover { background-color: #a83a3a; }"
+            )
+            delete_button.hide()
+
+            def delete_card():
+                confirm = QMessageBox.question(
+                    self,
+                    "Remove Card",
+                    (
+                        f"Remove '{card_name}' from this project?\n\n"
+                        "This will remove it from the current project only. Image files will stay on disk."
+                    ),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if confirm != QMessageBox.StandardButton.Yes:
+                    return
+
+                remove_card_from_project_state(print_dict, card_name)
+                window = self.window()
+                if window is not None and hasattr(
+                    window, "clear_project_thumbnail_if_matches"
+                ):
+                    window.clear_project_thumbnail_if_matches(card_name)
+                self.window().refresh(print_dict, img_dict)
+
+            delete_button.clicked.connect(delete_card)
 
         effective_dpi = None
         if card_name in img_dict:
@@ -1569,10 +1690,10 @@ class CardWidget(QWidget):
                     if card_name in print_dict["backside_short_edge"]
                     else False
                 )
-                short_edge_checkbox = QCheckBox("Sideways")
+                short_edge_checkbox = QCheckBox("Flip on Short Edge")
                 short_edge_checkbox.setChecked(is_short_edge)
                 short_edge_checkbox.setToolTip(
-                    "Determines whether to flip backside on short edge"
+                    "Turn this on if the back should flip on the short edge"
                 )
 
                 short_edge_checkbox.checkStateChanged.connect(
@@ -1587,9 +1708,9 @@ class CardWidget(QWidget):
                     if card_name in print_dict["oversized"]
                     else False
                 )
-                oversized_checkbox = QCheckBox("Big")
+                oversized_checkbox = QCheckBox("Oversized")
                 oversized_checkbox.setToolTip(
-                    "Determines whether this is an oversized card"
+                    "Turn this on if this card should be printed oversized"
                 )
                 oversized_checkbox.setChecked(is_oversized)
 
@@ -1632,6 +1753,7 @@ class CardWidget(QWidget):
         self._img_widget = img
         self._number_area = number_area
         self._thumbnail_button = thumbnail_button
+        self._delete_button = delete_button
 
         number_edit.editingFinished.connect(
             functools.partial(self.edit_number, print_dict)
@@ -1646,6 +1768,23 @@ class CardWidget(QWidget):
 
         self._number_edit = number_edit
         self._card_name = card_name
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if self._delete_button is not None:
+            self._delete_button.show()
+            self._delete_button.raise_()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        if self._delete_button is not None:
+            self._delete_button.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._delete_button is not None:
+            self._delete_button.move(self.width() - self._delete_button.width() - 6, 6)
+            self._delete_button.raise_()
 
     def heightForWidth(self, width):
         margins = self.layout().contentsMargins()
@@ -1809,19 +1948,22 @@ class CardGrid(QWidget):
             self._first_item.heightForWidth(self._first_item.minimumWidth())
         )
 
+    def has_visible_cards(self):
+        return any(not card_name.startswith("__") for card_name in self._cards.keys())
+
 
 class CardScrollArea(QScrollArea):
     def __init__(self, print_dict, card_grid):
         super().__init__()
 
-        global_label = QLabel("Global Controls:")
-        global_decrement_button = QPushButton("➖")
-        global_increment_button = QPushButton("➕")
+        global_label = QLabel("All Cards:")
+        global_decrement_button = QPushButton("Remove 1")
+        global_increment_button = QPushButton("Add 1")
         global_set_zero_button = QPushButton("Reset All")
 
-        global_decrement_button.setToolTip("Remove one from all")
-        global_increment_button.setToolTip("Add one to all")
-        global_set_zero_button.setToolTip("Set all to zero")
+        global_decrement_button.setToolTip("Remove one copy from every card")
+        global_increment_button.setToolTip("Add one copy to every card")
+        global_set_zero_button.setToolTip("Set every card count to zero")
 
         global_number_layout = QHBoxLayout()
         global_number_layout.addWidget(global_label)
@@ -1834,8 +1976,19 @@ class CardScrollArea(QScrollArea):
         global_number_widget = QWidget()
         global_number_widget.setLayout(global_number_layout)
 
+        empty_state = QLabel(
+            "No cards are loaded yet.\n\n"
+            "Start by clicking 'Import Cards' or by choosing your image folder in the sidebar.\n"
+            "After your card images appear here, click 'Prepare Images' if needed and then check the Preview tab."
+        )
+        empty_state.setWordWrap(True)
+        empty_state.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        empty_state.setFrameShape(QFrame.Shape.StyledPanel)
+        empty_state.setStyleSheet("padding: 20px;")
+
         card_area_layout = QVBoxLayout()
         card_area_layout.addWidget(global_number_widget)
+        card_area_layout.addWidget(empty_state)
         card_area_layout.addWidget(card_grid)
         card_area_layout.addStretch()
         card_area_layout.setSpacing(0)
@@ -1866,6 +2019,9 @@ class CardScrollArea(QScrollArea):
         global_set_zero_button.clicked.connect(reset_number)
 
         self._card_grid = card_grid
+        self._global_number_widget = global_number_widget
+        self._empty_state = empty_state
+        self._update_empty_state()
 
     def computeMinimumWidth(self):
         margins = self.widget().layout().contentsMargins()
@@ -1882,8 +2038,15 @@ class CardScrollArea(QScrollArea):
 
     def refresh(self, print_dict, img_dict):
         self._card_grid.refresh(print_dict, img_dict)
+        self._update_empty_state()
         self.setMinimumWidth(self.computeMinimumWidth())
         self._card_grid.adjustSize()  # forces recomputing size
+
+    def _update_empty_state(self):
+        has_cards = self._card_grid.has_visible_cards()
+        self._global_number_widget.setVisible(has_cards)
+        self._empty_state.setVisible(not has_cards)
+        self._card_grid.setVisible(has_cards)
 
 
 class PageGrid(QWidget):
@@ -2131,7 +2294,7 @@ class PrintPreview(QScrollArea):
             bleed_info.setStyleSheet("QLabel { color : red; }")
             header_layout.addWidget(bleed_info)
         if CFG.VibranceBump:
-            vibrance_info = QLabel("Preview does not respect 'Vibrance Bump' setting")
+            vibrance_info = QLabel("Preview does not show the 'Boost Color Vibrance' setting")
             vibrance_info.setStyleSheet("QLabel { color : red; }")
             header_layout.addWidget(vibrance_info)
 
@@ -2159,18 +2322,54 @@ class ActionsWidget(QGroupBox):
     ):
         super().__init__()
 
-        self.setTitle("Actions")
+        self.setTitle("Main Actions")
 
-        cropper_button = QPushButton("Run Cropper")
-        render_button = QPushButton("Render Document")
-        home_button = QPushButton("Home")
+        cropper_button = QPushButton("Prepare Images")
+        render_button = QPushButton("Save PDF")
+        home_button = QPushButton("Back to Projects")
         save_button = QPushButton("Save Project")
         load_button = QPushButton("Load Project")
-        set_images_button = QPushButton("Set Image Folder")
+        set_images_button = QPushButton("Choose Image Folder")
         open_images_button = QPushButton("Open Images")
         settings_button = QPushButton("Settings")
-        import_decklist_button = QPushButton("Import Decklist")
-        clear_cards_button = QPushButton("Clear Old Cards")
+        import_decklist_button = QPushButton("Import Cards")
+        clear_cards_button = QPushButton("Remove Old Card Images")
+
+        for button in [
+            import_decklist_button,
+            cropper_button,
+            render_button,
+            save_button,
+            load_button,
+            set_images_button,
+            open_images_button,
+            settings_button,
+            clear_cards_button,
+            home_button,
+        ]:
+            button.setMinimumHeight(30)
+
+        primary_button_style = (
+            "QPushButton {"
+            "background-color: #1f6f4a; color: white; font-weight: bold;"
+            "border: 1px solid #17563a; border-radius: 4px; padding: 6px 10px;"
+            "}"
+            "QPushButton:hover { background-color: #258457; }"
+        )
+        danger_button_style = (
+            "QPushButton {"
+            "background-color: #5f2626; color: white;"
+            "border: 1px solid #7e3636; border-radius: 4px; padding: 6px 10px;"
+            "}"
+            "QPushButton:hover { background-color: #743131; }"
+        )
+        subtle_heading_style = "font-size: 13px; font-weight: bold;"
+        subtle_description_style = "color: #666666;"
+
+        import_decklist_button.setStyleSheet(primary_button_style)
+        cropper_button.setStyleSheet(primary_button_style)
+        render_button.setStyleSheet(primary_button_style)
+        clear_cards_button.setStyleSheet(danger_button_style)
 
         buttons = [
             cropper_button,
@@ -2186,19 +2385,76 @@ class ActionsWidget(QGroupBox):
         ]
         minimum_width = max(map(lambda x: x.sizeHint().width(), buttons))
 
-        layout = QGridLayout()
-        layout.setColumnMinimumWidth(0, minimum_width + 10)
-        layout.setColumnMinimumWidth(1, minimum_width + 10)
-        layout.addWidget(cropper_button, 0, 0)
-        layout.addWidget(render_button, 0, 1)
-        layout.addWidget(home_button, 1, 0, 1, 2)
-        layout.addWidget(save_button, 2, 0)
-        layout.addWidget(load_button, 2, 1)
-        layout.addWidget(set_images_button, 3, 0)
-        layout.addWidget(open_images_button, 3, 1)
-        layout.addWidget(settings_button, 4, 0, 1, 2)
-        layout.addWidget(import_decklist_button, 5, 0, 1, 2)
-        layout.addWidget(clear_cards_button, 6, 0, 1, 2)
+        def section_title(text, description):
+            title = QLabel(text)
+            title.setStyleSheet(subtle_heading_style)
+            body = QLabel(description)
+            body.setWordWrap(True)
+            body.setStyleSheet(subtle_description_style)
+
+            wrapper = QWidget()
+            wrapper_layout = QVBoxLayout()
+            wrapper_layout.setContentsMargins(0, 0, 0, 0)
+            wrapper_layout.setSpacing(2)
+            wrapper_layout.addWidget(title)
+            wrapper_layout.addWidget(body)
+            wrapper.setLayout(wrapper_layout)
+            return wrapper
+
+        project_section = section_title(
+            "1. Project",
+            "Start a project, save your work, or return to the project list.",
+        )
+        cards_section = section_title(
+            "2. Add And Prepare Cards",
+            "Bring cards into the project, choose image files, and prepare them for printing.",
+        )
+        export_section = section_title(
+            "3. Export",
+            "Check the preview, then save the final PDF.",
+        )
+        more_section = section_title(
+            "More Tools",
+            "Less common actions for opening folders, changing app settings, or cleaning up old images.",
+        )
+
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+
+        project_grid = QGridLayout()
+        project_grid.setColumnMinimumWidth(0, minimum_width + 10)
+        project_grid.setColumnMinimumWidth(1, minimum_width + 10)
+        project_grid.addWidget(home_button, 0, 0, 1, 2)
+        project_grid.addWidget(save_button, 1, 0)
+        project_grid.addWidget(load_button, 1, 1)
+
+        cards_grid = QGridLayout()
+        cards_grid.setColumnMinimumWidth(0, minimum_width + 10)
+        cards_grid.setColumnMinimumWidth(1, minimum_width + 10)
+        cards_grid.addWidget(import_decklist_button, 0, 0, 1, 2)
+        cards_grid.addWidget(set_images_button, 1, 0, 1, 2)
+        cards_grid.addWidget(cropper_button, 2, 0, 1, 2)
+
+        export_grid = QGridLayout()
+        export_grid.setColumnMinimumWidth(0, minimum_width + 10)
+        export_grid.setColumnMinimumWidth(1, minimum_width + 10)
+        export_grid.addWidget(render_button, 0, 0, 1, 2)
+
+        more_grid = QGridLayout()
+        more_grid.setColumnMinimumWidth(0, minimum_width + 10)
+        more_grid.setColumnMinimumWidth(1, minimum_width + 10)
+        more_grid.addWidget(open_images_button, 0, 0, 1, 2)
+        more_grid.addWidget(settings_button, 1, 0, 1, 2)
+        more_grid.addWidget(clear_cards_button, 2, 0, 1, 2)
+
+        layout.addWidget(project_section)
+        layout.addLayout(project_grid)
+        layout.addWidget(cards_section)
+        layout.addLayout(cards_grid)
+        layout.addWidget(export_section)
+        layout.addLayout(export_grid)
+        layout.addWidget(more_section)
+        layout.addLayout(more_grid)
 
         self.setLayout(layout)
 
@@ -2211,7 +2467,7 @@ class ActionsWidget(QGroupBox):
             ):
                 QToolTip.showText(
                     QCursor.pos(),
-                    "Cropper needs to be run first",
+                    "Prepare images first, then try saving the PDF again.",
                 )
                 return
 
@@ -2223,7 +2479,7 @@ class ActionsWidget(QGroupBox):
             )
             pdf_path = QFileDialog.getSaveFileName(
                 self,
-                "Render Document",
+                "Save PDF",
                 os.path.join(cwd, default_pdf_name),
                 "PDF Files (*.pdf)",
             )[0]
@@ -2254,10 +2510,15 @@ class ActionsWidget(QGroupBox):
                     )
 
             self.window().setEnabled(False)
-            render_window = popup(self.window(), "Rendering PDF...", application._debug_mode)
+            render_window = popup(self.window(), "Saving PDF...", application._debug_mode)
             render_window.show_during_work(render_work)
             del render_window
             self.window().setEnabled(True)
+            QMessageBox.information(
+                self,
+                "PDF Saved",
+                f"Your PDF was saved here:\n\n{pdf_path}\n\nThe app will try to open it for you automatically.",
+            )
 
         def run_cropper():
             bleed_edge = float(print_dict["bleed_edge"])
@@ -2308,11 +2569,19 @@ class ActionsWidget(QGroupBox):
             else:
                 QToolTip.showText(
                     QCursor.pos(),
-                    "All images are already cropped",
+                    "Images are already prepared. You can check Preview or save the PDF.",
                 )
 
         def save_project():
-            application.save_active_project(print_dict)
+            saved = application.save_active_project(print_dict)
+            if saved is None:
+                return
+
+            QMessageBox.information(
+                self,
+                "Project Saved",
+                f"Your project was saved as '{saved['display_name']}'.\n\nLocation:\n{saved['path']}",
+            )
 
         def load_project():
             new_project_json = project_file_dialog(
@@ -2418,7 +2687,7 @@ class ActionsWidget(QGroupBox):
 
             self.window().setEnabled(False)
             import_window = popup(
-                self.window(), "Importing decklist...", application._debug_mode
+                self.window(), "Importing cards...", application._debug_mode
             )
             import_window.show_during_work(import_work)
             del import_window
@@ -2426,7 +2695,7 @@ class ActionsWidget(QGroupBox):
 
             if import_error is not None:
                 application.warn_nonfatal(
-                    "Decklist Import Failed",
+                    "Card Import Failed",
                     str(import_error),
                 )
                 return
@@ -2452,17 +2721,23 @@ class ActionsWidget(QGroupBox):
 
             message = "\n\n".join(summary_lines)
             if import_result.imported:
-                QMessageBox.information(self, "Decklist Import Complete", message)
+                QMessageBox.information(
+                    self,
+                    "Card Import Complete",
+                    message
+                    + "\n\nNext step: click 'Prepare Images' if needed, then check the Preview tab.",
+                )
             else:
-                application.warn_nonfatal("Decklist Import Failed", message)
+                application.warn_nonfatal("Card Import Failed", message)
 
         def clear_old_cards():
             confirm = QMessageBox.question(
                 self,
-                "Clear Old Cards",
+                "Remove Old Card Images",
                 (
-                    "Delete all card images from the image folder and its crop folder?\n\n"
-                    "The default card back will be preserved."
+                    "Remove all card images from the current image folder and its crop folder?\n\n"
+                    "This is meant for cleaning out an old batch before starting over.\n"
+                    "The default card back will be kept."
                 ),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -2474,12 +2749,17 @@ class ActionsWidget(QGroupBox):
                 project.clear_old_cards(print_dict, img_dict)
             except OSError as exc:
                 application.warn_nonfatal(
-                    "Clear Old Cards Failed",
+                    "Remove Old Card Images Failed",
                     f"The old card images could not be fully removed.\n\n{exc}",
                 )
                 return
 
             self.window().refresh(print_dict, img_dict)
+            QMessageBox.information(
+                self,
+                "Old Card Images Removed",
+                "The old card images were removed.\n\nYou can now import cards or choose a different image folder.",
+            )
 
         render_button.clicked.connect(render)
         cropper_button.clicked.connect(run_cropper)
@@ -2501,9 +2781,14 @@ class PrintOptionsWidget(QGroupBox):
     def __init__(self, print_dict, img_dict):
         super().__init__()
 
-        self.setTitle("Print Options")
+        self.setTitle("PDF Settings")
 
-        print_output = LineEditWithLabel("PDF &Filename", print_dict["filename"])
+        description = QLabel(
+            "These settings control the PDF file name, paper size, page direction, and guide lines."
+        )
+        description.setWordWrap(True)
+
+        print_output = LineEditWithLabel("PDF &Name", print_dict["filename"])
         paper_size = ComboBoxWithLabel(
             "&Paper Size", list(page_sizes.keys()), print_dict["pagesize"]
         )
@@ -2514,6 +2799,7 @@ class PrintOptionsWidget(QGroupBox):
         guides_checkbox.setChecked(print_dict["extended_guides"])
 
         layout = QVBoxLayout()
+        layout.addWidget(description)
         layout.addWidget(print_output)
         layout.addWidget(paper_size)
         layout.addWidget(orientation)
@@ -2593,7 +2879,17 @@ class CardOptionsWidget(QGroupBox):
     def __init__(self, print_dict, img_dict):
         super().__init__()
 
-        self.setTitle("Card Options")
+        self.setTitle("Card Settings")
+
+        description = QLabel(
+            "Use these settings to adjust bleed, card backs, and oversized card handling."
+        )
+        description.setWordWrap(True)
+
+        advanced_note = QLabel(
+            "Most projects can leave these off. Turn them on only if your cards need backs or oversized printing."
+        )
+        advanced_note.setWordWrap(True)
 
         bleed_edge_spin = QDoubleSpinBox()
         bleed_edge_spin.setDecimals(2)
@@ -2608,12 +2904,18 @@ class CardOptionsWidget(QGroupBox):
         bleed_back_divider.setFrameShadow(QFrame.Shadow.Sunken)
 
         backside_enabled = print_dict["backside_enabled"]
-        backside_checkbox = QCheckBox("Enable Backside")
+        backside_checkbox = QCheckBox("Print Card Backs")
         backside_checkbox.setChecked(backside_enabled)
+        backside_checkbox.setToolTip(
+            "Turn this on only if you want separate back pages in the final PDF."
+        )
 
-        backside_default_button = QPushButton("Default")
+        backside_default_button = QPushButton("Choose Default Back")
         backside_default_preview = BacksidePreview(
             print_dict["backside_default"], img_dict
+        )
+        backside_default_button.setToolTip(
+            "Choose the back image used for cards that do not have a custom back."
         )
 
         backside_offset_spin = QDoubleSpinBox()
@@ -2622,7 +2924,10 @@ class CardOptionsWidget(QGroupBox):
         backside_offset_spin.setSingleStep(0.1)
         backside_offset_spin.setSuffix("mm")
         backside_offset_spin.setValue(float(print_dict["backside_offset"]))
-        backside_offset = WidgetWithLabel("Off&set", backside_offset_spin)
+        backside_offset = WidgetWithLabel("Back &Offset", backside_offset_spin)
+        backside_offset.setToolTip(
+            "Adjust this only if front and back pages print slightly misaligned."
+        )
 
         backside_default_button.setEnabled(backside_enabled)
         backside_default_preview.setEnabled(backside_enabled)
@@ -2633,10 +2938,15 @@ class CardOptionsWidget(QGroupBox):
         back_over_divider.setFrameShadow(QFrame.Shadow.Sunken)
 
         oversized_enabled = print_dict["oversized_enabled"]
-        oversized_checkbox = QCheckBox("Enable Oversized Option")
+        oversized_checkbox = QCheckBox("Allow Oversized Cards")
         oversized_checkbox.setChecked(oversized_enabled)
+        oversized_checkbox.setToolTip(
+            "Turn this on only if some cards need a larger print size."
+        )
 
         layout = QVBoxLayout()
+        layout.addWidget(description)
+        layout.addWidget(advanced_note)
         layout.addWidget(bleed_edge)
         layout.addWidget(bleed_back_divider)
         layout.addWidget(backside_checkbox)
@@ -2708,17 +3018,23 @@ class GlobalOptionsWidget(QGroupBox):
     def __init__(self, print_dict, img_dict):
         super().__init__()
 
-        self.setTitle("Global Config")
+        self.setTitle("App Settings")
 
         description = QLabel(
-            "Open the settings dialog to edit all values stored in config.ini."
+            "Open the settings window to edit app-wide options stored in config.ini."
         )
         description.setWordWrap(True)
+
+        secondary_description = QLabel(
+            "This is where you adjust how the app behaves overall, such as card grid size and image-processing defaults."
+        )
+        secondary_description.setWordWrap(True)
 
         open_settings_button = QPushButton("Open Settings")
 
         layout = QVBoxLayout()
         layout.addWidget(description)
+        layout.addWidget(secondary_description)
         layout.addWidget(open_settings_button)
         self.setLayout(layout)
 
@@ -2753,6 +3069,7 @@ class OptionsWidget(QWidget):
     ):
         super().__init__()
 
+        workflow_guide = WorkflowGuideWidget()
         actions_widget = ActionsWidget(
             application,
             print_dict,
@@ -2763,6 +3080,7 @@ class OptionsWidget(QWidget):
         global_options = GlobalOptionsWidget(print_dict, img_dict)
 
         layout = QVBoxLayout()
+        layout.addWidget(workflow_guide)
         layout.addWidget(actions_widget)
         layout.addWidget(print_options)
         layout.addWidget(card_options)
@@ -2797,6 +3115,92 @@ class CardTabs(QTabWidget):
         self.currentChanged.connect(current_changed)
 
 
+class ProjectTileWidget(QWidget):
+    open_requested = QtCore.pyqtSignal(str)
+    delete_requested = QtCore.pyqtSignal(str)
+
+    def __init__(self, project_entry):
+        super().__init__()
+        self.setMouseTracking(True)
+        self._project_id = project_entry.get("id")
+
+        thumbnail = QLabel()
+        thumbnail.setPixmap(project_thumbnail_pixmap(project_entry.get("thumbnail_path")))
+        thumbnail.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        thumbnail.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        modified = project_entry.get("modified_at") or project_entry.get("last_opened_at")
+        modified_text = "Unknown"
+        if modified:
+            try:
+                modified_text = (
+                    datetime.datetime.fromisoformat(modified).astimezone().strftime("%Y-%m-%d %H:%M")
+                )
+            except ValueError:
+                modified_text = modified
+
+        title = QLabel(project_entry.get("display_name", "Untitled Project"))
+        title.setWordWrap(True)
+        title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-weight: bold;")
+        title.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        subtitle = QLabel(f"Modified: {modified_text}")
+        subtitle.setWordWrap(True)
+        subtitle.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet("color: #666666;")
+        subtitle.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+        layout.addWidget(thumbnail)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        self.setLayout(layout)
+        self.setFixedSize(210, 228)
+        self.setStyleSheet(
+            "ProjectTileWidget {"
+            "background-color: #171717; border: 1px solid #2c2c2c; border-radius: 10px;"
+            "}"
+        )
+
+        delete_button = QPushButton("X", self)
+        delete_button.setFixedSize(24, 24)
+        delete_button.setToolTip("Delete this project")
+        delete_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #8d2d2d; color: white; font-weight: bold;"
+            "border: 1px solid #b85555; border-radius: 12px;"
+            "}"
+            "QPushButton:hover { background-color: #a83a3a; }"
+        )
+        delete_button.hide()
+        delete_button.clicked.connect(
+            lambda: self.delete_requested.emit(self._project_id)
+        )
+        self._delete_button = delete_button
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self._delete_button.show()
+        self._delete_button.raise_()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self._delete_button.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._delete_button.move(self.width() - self._delete_button.width() - 6, 6)
+        self._delete_button.raise_()
+
+    def mouseDoubleClickEvent(self, event):
+        super().mouseDoubleClickEvent(event)
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.open_requested.emit(self._project_id)
+
+
 class ProjectDashboardPage(QWidget):
     def __init__(self, application):
         super().__init__()
@@ -2806,8 +3210,25 @@ class ProjectDashboardPage(QWidget):
 
         title = QLabel("Projects")
         title.setStyleSheet("font-size: 28px; font-weight: bold;")
-        subtitle = QLabel("Open a saved project or start a fresh draft.")
+        subtitle = QLabel(
+            "Open a saved project, import one from a file, or start a fresh draft."
+        )
         subtitle.setWordWrap(True)
+
+        helper_text = QLabel(
+            "If you are new here, start a fresh draft, import or add your cards, then save the project once it looks right."
+        )
+        helper_text.setWordWrap(True)
+
+        empty_state = QLabel(
+            "No projects yet.\n\n"
+            "Click the green + button to start a new draft, or click 'Import Project' if you already have a saved project file."
+        )
+        empty_state.setWordWrap(True)
+        empty_state.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        empty_state.setFrameShape(QFrame.Shape.StyledPanel)
+        empty_state.setStyleSheet("padding: 24px;")
+        self._empty_state = empty_state
 
         project_list = QListWidget()
         project_list.setViewMode(QListWidget.ViewMode.IconMode)
@@ -2816,28 +3237,28 @@ class ProjectDashboardPage(QWidget):
         project_list.setSpacing(14)
         project_list.setIconSize(QtCore.QSize(120, 160))
         project_list.setGridSize(QtCore.QSize(220, 230))
-        project_list.itemDoubleClicked.connect(lambda _item: self.open_selected())
         self._project_list = project_list
 
         import_button = QPushButton("Import Project")
-        remove_button = QPushButton("Remove From Library")
         new_button = QPushButton("+")
         new_button.setFixedSize(56, 56)
         new_button.setStyleSheet(
+            "QPushButton {"
             "font-size: 28px; font-weight: bold; border-radius: 28px; "
-            "background-color: #1f6f4a; color: white;"
+            "background-color: #1f6f4a; color: white; border: 2px solid #17563a;"
+            "}"
+            "QPushButton:hover { background-color: #289b63; border-color: #43c884; }"
+            "QPushButton:pressed { background-color: #1a5f40; }"
         )
         new_button.setToolTip("Start a new project draft")
 
         import_button.clicked.connect(self.import_project)
-        remove_button.clicked.connect(self.remove_selected)
         new_button.clicked.connect(application.open_blank_editor)
 
         top_row = QHBoxLayout()
         top_row.addWidget(title)
         top_row.addStretch()
         top_row.addWidget(import_button)
-        top_row.addWidget(remove_button)
 
         bottom_row = QHBoxLayout()
         bottom_row.addStretch()
@@ -2846,6 +3267,8 @@ class ProjectDashboardPage(QWidget):
         layout = QVBoxLayout()
         layout.addLayout(top_row)
         layout.addWidget(subtitle)
+        layout.addWidget(helper_text)
+        layout.addWidget(empty_state)
         layout.addWidget(project_list)
         layout.addLayout(bottom_row)
         self.setLayout(layout)
@@ -2854,26 +3277,18 @@ class ProjectDashboardPage(QWidget):
         self._projects = project_library.list_projects()
         self._project_list.clear()
         for project_entry in self._projects:
-            modified = project_entry.get("modified_at") or project_entry.get(
-                "last_opened_at"
-            )
-            modified_text = "Unknown"
-            if modified:
-                try:
-                    modified_text = (
-                        datetime.datetime.fromisoformat(modified)
-                        .astimezone()
-                        .strftime("%Y-%m-%d %H:%M")
-                    )
-                except ValueError:
-                    modified_text = modified
-
-            item = QListWidgetItem(
-                f"{project_entry.get('display_name', 'Untitled Project')}\nModified: {modified_text}"
-            )
+            item = QListWidgetItem()
             item.setData(QtCore.Qt.ItemDataRole.UserRole, project_entry.get("id"))
-            item.setIcon(QIcon(project_thumbnail_pixmap(project_entry.get("thumbnail_path"))))
+            item.setSizeHint(QtCore.QSize(220, 230))
             self._project_list.addItem(item)
+            tile = ProjectTileWidget(project_entry)
+            tile.open_requested.connect(self._application.open_managed_project)
+            tile.delete_requested.connect(self.delete_project)
+            self._project_list.setItemWidget(item, tile)
+
+        has_projects = self._project_list.count() > 0
+        self._empty_state.setVisible(not has_projects)
+        self._project_list.setVisible(has_projects)
 
         if self._project_list.count() > 0:
             self._project_list.setCurrentRow(0)
@@ -2897,28 +3312,10 @@ class ProjectDashboardPage(QWidget):
         self._application.import_and_open_project(selected_path)
         self.refresh_projects()
 
-    def remove_selected(self):
-        project_id = self.selected_project_id()
-        if project_id is None:
-            return
-        project_entry = project_library.get_project(project_id)
-        if project_entry is None:
-            self.refresh_projects()
-            return
-        confirm = QMessageBox.question(
-            self,
-            "Remove Project",
-            (
-                f"Remove `{project_entry.get('display_name', 'Untitled Project')}` "
-                "from the project library?\n\nThe project file itself will not be deleted."
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+    def delete_project(self, project_id):
+        delete_project_with_confirmation(
+            self, self._application, project_id, self.refresh_projects
         )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-        project_library.remove_project(project_id)
-        self.refresh_projects()
 
 
 class AppShellWindow(QMainWindow):
@@ -3033,8 +3430,8 @@ class AppShellWindow(QMainWindow):
             self,
             "Discard Draft?",
             (
-                "This draft has unsaved images in tmp_images.\n\n"
-                "Discard the draft and clear tmp_images?"
+                "This draft still has unsaved images in tmp_images.\n\n"
+                "If you continue, the current draft will be discarded and those temporary images will be removed."
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -3065,7 +3462,7 @@ class AppShellWindow(QMainWindow):
                 "Start New Project?",
                 (
                     "tmp_images already contains an unsaved draft.\n\n"
-                    "Start a fresh draft and clear those temporary images?"
+                    "Start a fresh draft and remove those temporary images first?"
                 ),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -3204,7 +3601,7 @@ class AppShellWindow(QMainWindow):
         name, accepted = QInputDialog.getText(
             self,
             "Save Project",
-            "Project name:",
+            "Choose a name for this project.\n\nThis is the name that will appear in the project list:",
         )
         if not accepted:
             return None
@@ -3212,7 +3609,9 @@ class AppShellWindow(QMainWindow):
         display_name = name.strip()
         if display_name == "":
             QMessageBox.warning(
-                self, "Project Name Required", "Please enter a project name."
+                self,
+                "Project Name Required",
+                "Please enter a project name so it can be saved and shown in the project list.",
             )
             return None
 
@@ -3244,9 +3643,19 @@ class AppShellWindow(QMainWindow):
 
         QMessageBox.information(
             self,
-            "Dashboard Thumbnail",
-            f"`{card_name}` is now the dashboard thumbnail for this project.",
+            "Project Cover Updated",
+            f"'{card_name}' is now the cover image for this project in the project list.",
         )
+
+    def clear_project_thumbnail_if_matches(self, card_name):
+        session = self._active_session
+        if session is None or session.get("thumbnail_card") != card_name:
+            return
+
+        session["thumbnail_card"] = None
+        if session.get("managed") and session.get("project_id") is not None:
+            project_library.clear_thumbnail_card(session["project_id"])
+            self._dashboard_page.refresh_projects()
 
     def refresh_widgets(self, print_dict):
         if self._editor_page is not None:

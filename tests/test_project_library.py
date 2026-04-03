@@ -122,13 +122,61 @@ def test_import_project_copies_external_project_into_library(monkeypatch, tmp_pa
     }
 
 
-def test_remove_project_unregisters_without_deleting_file(monkeypatch, tmp_path):
+def test_remove_project_deletes_project_file_and_image_folder(monkeypatch, tmp_path):
     monkeypatch.setattr(project_library, "cwd", str(tmp_path))
     _seed_test_back(tmp_path)
     entry = project_library.create_project("Delete Me")
-    project_path = entry["path"]
+    project_path = Path(entry["path"])
+    project_data = json.loads(project_path.read_text(encoding="utf-8"))
+    image_dir = Path(project_data["image_dir"])
+    (image_dir / "card-a.png").write_bytes(b"front")
 
     assert project_library.remove_project(entry["id"]) is True
     assert project_library.list_projects() == []
-    project_data = json.loads(Path(project_path).read_text(encoding="utf-8"))
-    assert project_data["image_dir"].endswith("_images")
+    assert not project_path.exists()
+    assert not image_dir.exists()
+
+
+def test_remove_project_succeeds_when_project_artifacts_are_already_missing(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(project_library, "cwd", str(tmp_path))
+    _seed_test_back(tmp_path)
+    entry = project_library.create_project("Missing Files")
+    project_path = Path(entry["path"])
+    project_data = json.loads(project_path.read_text(encoding="utf-8"))
+    image_dir = Path(project_data["image_dir"])
+
+    project_path.unlink()
+    if image_dir.exists():
+        for child in sorted(image_dir.rglob("*"), reverse=True):
+            if child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        image_dir.rmdir()
+
+    assert project_library.remove_project(entry["id"]) is True
+    assert project_library.list_projects() == []
+
+
+def test_remove_project_keeps_library_entry_when_delete_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(project_library, "cwd", str(tmp_path))
+    _seed_test_back(tmp_path)
+    entry = project_library.create_project("Fail Delete")
+
+    def fail_remove(_path):
+        raise OSError("boom")
+
+    monkeypatch.setattr(project_library.os, "remove", fail_remove)
+
+    try:
+        project_library.remove_project(entry["id"])
+    except OSError as exc:
+        assert str(exc) == "boom"
+    else:
+        raise AssertionError("Expected remove_project to raise OSError")
+
+    remaining = project_library.list_projects()
+    assert len(remaining) == 1
+    assert remaining[0]["id"] == entry["id"]
