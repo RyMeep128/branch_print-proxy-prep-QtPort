@@ -129,6 +129,12 @@ def init_images(print_dict, img_dict, print_fn):
         image.cache_previews(img_cache, image_dir, crop_dir, print_fn, img_dict)
 
 
+def refresh_after_image_changes(print_dict, img_dict, print_fn, warn_fn=None):
+    init_dict(print_dict, img_dict, warn_fn)
+    init_images(print_dict, img_dict, print_fn)
+    init_dict(print_dict, img_dict, warn_fn)
+
+
 def clear_old_cards(print_dict, img_dict):
     image_dir = print_dict["image_dir"]
     crop_dir = os.path.join(image_dir, "crop")

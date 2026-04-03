@@ -45,11 +45,13 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QFileDialog,
     QMessageBox,
+    QTextEdit,
 )
 
 import pdf
 import image
 import project
+import deck_import
 from util import *
 from config import *
 from constants import *
@@ -256,6 +258,16 @@ def project_file_dialog(parent, type, root):
     return file_dialog(parent, "Open Project", root, "Json Files (*.json)", type)
 
 
+def decklist_file_dialog(parent, root):
+    return file_dialog(
+        parent,
+        "Open Decklist",
+        root,
+        "Deck Files (*.txt *.dek *.mtga *.dck);;All Files (*)",
+        FileDialogType.Open,
+    )
+
+
 def image_file_dialog(parent, folder):
     choice = file_dialog(
         parent,
@@ -265,6 +277,71 @@ def image_file_dialog(parent, folder):
         FileDialogType.Open,
     )
     return os.path.basename(choice) if choice is not None else None
+
+
+class DeckImportDialog(QDialog):
+    def __init__(self, parent, image_dir):
+        super().__init__(parent)
+
+        self.setWindowTitle("Import Decklist")
+        self.resize(560, 420)
+
+        instructions = QLabel(
+            "Paste a decklist or load one from a file. Supported format is lines like `4 Lightning Bolt`."
+        )
+        instructions.setWordWrap(True)
+
+        self._text_edit = QTextEdit()
+        self._text_edit.setAcceptRichText(False)
+        self._text_edit.setPlaceholderText(
+            "4 Lightning Bolt\n2 Counterspell\n1 Opt (ELD) 59"
+        )
+
+        load_file_button = QPushButton("Load From File")
+        import_button = QPushButton("Import")
+        cancel_button = QPushButton("Cancel")
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(load_file_button)
+        button_row.addStretch()
+        button_row.addWidget(import_button)
+        button_row.addWidget(cancel_button)
+
+        layout = QVBoxLayout()
+        layout.addWidget(instructions)
+        layout.addWidget(self._text_edit)
+        layout.addLayout(button_row)
+        self.setLayout(layout)
+
+        self._image_dir = image_dir
+
+        def load_file():
+            decklist_path = decklist_file_dialog(self, self._image_dir)
+            if decklist_path is None:
+                return
+            try:
+                self._text_edit.setPlainText(
+                    deck_import.read_decklist_file(decklist_path)
+                )
+            except OSError as exc:
+                QMessageBox.warning(
+                    self,
+                    "Decklist Load Failed",
+                    f"The decklist file could not be loaded.\n\n{exc}",
+                )
+
+        def import_deck():
+            if len(self.deck_text().strip()) == 0:
+                QToolTip.showText(QCursor.pos(), "Paste or load a decklist first")
+                return
+            self.accept()
+
+        load_file_button.clicked.connect(load_file)
+        import_button.clicked.connect(import_deck)
+        cancel_button.clicked.connect(self.reject)
+
+    def deck_text(self):
+        return self._text_edit.toPlainText()
 
 
 class WidgetWithLabel(QWidget):
@@ -1209,6 +1286,7 @@ class ActionsWidget(QGroupBox):
         load_button = QPushButton("Load Project")
         set_images_button = QPushButton("Set Image Folder")
         open_images_button = QPushButton("Open Images")
+        import_decklist_button = QPushButton("Import Decklist")
         clear_cards_button = QPushButton("Clear Old Cards")
 
         buttons = [
@@ -1218,6 +1296,7 @@ class ActionsWidget(QGroupBox):
             load_button,
             set_images_button,
             open_images_button,
+            import_decklist_button,
             clear_cards_button,
         ]
         minimum_width = max(map(lambda x: x.sizeHint().width(), buttons))
@@ -1231,7 +1310,8 @@ class ActionsWidget(QGroupBox):
         layout.addWidget(load_button, 1, 1)
         layout.addWidget(set_images_button, 2, 0)
         layout.addWidget(open_images_button, 2, 1)
-        layout.addWidget(clear_cards_button, 3, 0, 1, 2)
+        layout.addWidget(import_decklist_button, 3, 0, 1, 2)
+        layout.addWidget(clear_cards_button, 4, 0, 1, 2)
 
         self.setLayout(layout)
 
@@ -1409,6 +1489,66 @@ class ActionsWidget(QGroupBox):
         def open_images_folder():
             open_folder(print_dict["image_dir"])
 
+        def import_decklist_images():
+            dialog = DeckImportDialog(self, print_dict["image_dir"])
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            deck_text = dialog.deck_text()
+            import_result = None
+
+            def import_work():
+                nonlocal import_result
+                import_result = deck_import.import_decklist(
+                    deck_text,
+                    print_dict["image_dir"],
+                    make_popup_print_fn(import_window),
+                )
+                if import_result.imported:
+                    make_popup_print_fn(import_window)("Refreshing project...")
+                    project.refresh_after_image_changes(
+                        print_dict,
+                        img_dict,
+                        make_popup_print_fn(import_window),
+                        application.warn_nonfatal,
+                    )
+                    deck_import.apply_imported_counts(
+                        print_dict, import_result.imported
+                    )
+
+            self.window().setEnabled(False)
+            import_window = popup(
+                self.window(), "Importing decklist...", application._debug_mode
+            )
+            import_window.show_during_work(import_work)
+            del import_window
+            self.window().setEnabled(True)
+
+            if import_result is None:
+                return
+
+            if import_result.imported:
+                self.window().refresh(print_dict, img_dict)
+
+            summary_lines = [
+                f"Imported {len(import_result.imported)} unique cards "
+                f"({import_result.imported_count} total copies)."
+            ]
+            if import_result.failed_cards:
+                summary_lines.append(
+                    "Failed to import: " + ", ".join(import_result.failed_cards[:8])
+                )
+            if import_result.unmatched_lines:
+                summary_lines.append(
+                    "Unmatched lines: " + ", ".join(import_result.unmatched_lines[:8])
+                )
+
+            message = "\n\n".join(summary_lines)
+            if import_result.imported:
+                QMessageBox.information(self, "Decklist Import Complete", message)
+            else:
+                application.warn_nonfatal("Decklist Import Failed", message)
+
         def clear_old_cards():
             confirm = QMessageBox.question(
                 self,
@@ -1440,6 +1580,7 @@ class ActionsWidget(QGroupBox):
         load_button.clicked.connect(load_project)
         set_images_button.clicked.connect(set_images_folder)
         open_images_button.clicked.connect(open_images_folder)
+        import_decklist_button.clicked.connect(import_decklist_images)
         clear_cards_button.clicked.connect(clear_old_cards)
 
         self._cropper_button = cropper_button

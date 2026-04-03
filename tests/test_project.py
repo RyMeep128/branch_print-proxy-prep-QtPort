@@ -139,3 +139,29 @@ def test_clear_old_cards_removes_card_images_but_preserves_default_back(tmp_path
     assert print_dict["oversized"] == {}
     assert img_dict == {"__back.jpg": {"size": [1, 1], "data": "b''"}}
     assert json.loads(img_cache.read_text(encoding="utf-8")) == img_dict
+
+
+def test_refresh_after_image_changes_runs_init_then_images_then_init(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        project,
+        "init_dict",
+        lambda pd, id_, warn_fn=None: calls.append(("init_dict", warn_fn)),
+    )
+    monkeypatch.setattr(
+        project,
+        "init_images",
+        lambda pd, id_, print_fn: calls.append(("init_images", print_fn)),
+    )
+
+    warn_fn = object()
+    print_fn = object()
+
+    project.refresh_after_image_changes({}, {}, print_fn, warn_fn)
+
+    assert calls == [
+        ("init_dict", warn_fn),
+        ("init_images", print_fn),
+        ("init_dict", warn_fn),
+    ]
