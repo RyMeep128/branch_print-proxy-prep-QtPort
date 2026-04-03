@@ -199,8 +199,7 @@ def clear_old_cards(print_dict, img_dict):
         del img_dict[img_name]
 
     if stale_cache_entries:
-        with open(img_cache, "w") as fp:
-            json.dump(img_dict, fp)
+        util.write_json_atomic(img_cache, img_dict)
 
     init_dict(print_dict, img_dict)
     return deleted_count

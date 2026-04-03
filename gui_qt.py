@@ -217,7 +217,11 @@ def popup(window, middle_text, debug_thread):
 
 def make_popup_print_fn(popup):
     def popup_print_fn(text):
-        print(text)
+        try:
+            print(text)
+        except Exception:
+            # Some card names contain Unicode not supported by the active console code page.
+            pass
         popup.update_text(text)
 
     return popup_print_fn

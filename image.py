@@ -424,5 +424,4 @@ def cache_previews(file, image_dir, crop_dir, print_fn, data):
                     (h, w, _) = source_img.shape
                 img_dict["effective_dpi"] = effective_dpi_from_dimensions(w, h, f)
 
-    with open(file, "w") as fp:
-        json.dump(data, fp, ensure_ascii=False)
+    write_json_atomic(file, data, ensure_ascii=False)

@@ -1,6 +1,8 @@
 import os
 import sys
 import subprocess
+import json
+import tempfile
 
 import constants
 
@@ -79,6 +81,24 @@ def resource_path():
         return sys._MEIPASS
     except Exception:
         return constants.cwd
+
+
+def write_json_atomic(path, data, ensure_ascii=False):
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    fd, temp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
+            json.dump(data, fp, ensure_ascii=ensure_ascii)
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
 
 def is_debugger_attached():
     gettrace = getattr(sys, "gettrace", None)

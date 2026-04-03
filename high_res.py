@@ -13,6 +13,7 @@ from typing import Callable
 from config import CFG
 from constants import cwd
 from image import image_from_bytes
+import util
 
 GOOGLE_DRIVE_IMAGE_API_URL = (
     "https://script.google.com/macros/s/"
@@ -199,8 +200,7 @@ def _write_disk_json_cache(kind: str, key: tuple, payload):
         "payload": payload,
     }
     try:
-        with open(metadata_path, "w", encoding="utf-8") as fp:
-            json.dump(metadata, fp, ensure_ascii=False)
+        util.write_json_atomic(metadata_path, metadata, ensure_ascii=False)
     except OSError:
         pass
 
@@ -238,8 +238,10 @@ def _write_disk_bytes_cache(kind: str, key: tuple, payload: bytes):
     try:
         with open(data_path, "wb") as fp:
             fp.write(payload)
-        with open(metadata_path, "w", encoding="utf-8") as fp:
-            json.dump({"expires_at": time.time() + _ttl_seconds()}, fp)
+        util.write_json_atomic(
+            metadata_path,
+            {"expires_at": time.time() + _ttl_seconds()},
+        )
     except OSError:
         _purge_disk_cache_file(metadata_path, data_path)
 
@@ -855,8 +857,7 @@ def invalidate_cached_card_artifacts(print_dict: dict, image_dir: str, card_name
         if isinstance(cache_data, dict) and card_name in cache_data:
             del cache_data[card_name]
             try:
-                with open(img_cache_path, "w") as fp:
-                    json.dump(cache_data, fp, ensure_ascii=False)
+                util.write_json_atomic(img_cache_path, cache_data, ensure_ascii=False)
             except OSError:
                 pass
 
