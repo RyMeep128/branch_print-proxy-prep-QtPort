@@ -125,6 +125,183 @@ def test_search_high_res_page_returns_total_count():
     assert len(result.candidates) == 1
 
 
+def test_search_high_res_page_uses_in_memory_cache(monkeypatch):
+    high_res.clear_all_high_res_caches()
+    calls = []
+
+    def fake_fetch_json(url, body=None, headers=None):
+        calls.append((url, body))
+        return {
+            "cards": [
+                {
+                    "identifier": "abc123",
+                    "name": "Opt",
+                    "dpi": 1200,
+                    "extension": "png",
+                    "downloadLink": "https://download/opt.png",
+                    "smallThumbnailUrl": "https://thumb/small",
+                    "mediumThumbnailUrl": "https://thumb/medium",
+                    "sourceId": 7,
+                    "sourceName": "Test Source",
+                }
+            ],
+            "count": 1274,
+        }
+
+    monkeypatch.setattr(high_res, "_fetch_json", fake_fetch_json)
+
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt")
+    first = high_res.search_high_res_page(
+        context,
+        "https://example.com/",
+        300,
+        1200,
+        page_start=0,
+        page_size=60,
+    )
+    second = high_res.search_high_res_page(
+        context,
+        "https://example.com/",
+        300,
+        1200,
+        page_start=0,
+        page_size=60,
+    )
+
+    assert first == second
+    assert len(calls) == 1
+    high_res.clear_all_high_res_caches()
+
+
+def test_search_high_res_page_cache_expires(monkeypatch):
+    high_res.clear_all_high_res_caches()
+    fetch_calls = []
+    current_time = {"value": 100.0}
+
+    def fake_fetch_json(url, body=None, headers=None):
+        fetch_calls.append((url, body))
+        return {
+            "cards": [
+                {
+                    "identifier": f"abc{len(fetch_calls)}",
+                    "name": "Opt",
+                    "dpi": 1200,
+                    "extension": "png",
+                    "downloadLink": "https://download/opt.png",
+                    "smallThumbnailUrl": "https://thumb/small",
+                    "mediumThumbnailUrl": "https://thumb/medium",
+                    "sourceId": 7,
+                    "sourceName": "Test Source",
+                }
+            ],
+            "count": 1,
+        }
+
+    monkeypatch.setattr(high_res, "_fetch_json", fake_fetch_json)
+    monkeypatch.setattr(high_res.time, "time", lambda: current_time["value"])
+
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt")
+    first = high_res.search_high_res_page(context, "https://example.com/", 300, 1200)
+    current_time["value"] += high_res.CFG.HighResCacheTTLSeconds + 1
+    second = high_res.search_high_res_page(context, "https://example.com/", 300, 1200)
+
+    assert first.candidates[0].identifier == "abc1"
+    assert second.candidates[0].identifier == "abc2"
+    assert len(fetch_calls) == 2
+    high_res.clear_all_high_res_caches()
+
+
+def test_search_high_res_page_cache_respects_memory_limit(monkeypatch):
+    high_res.clear_all_high_res_caches()
+    monkeypatch.setattr(high_res.CFG, "HighResSearchCacheMemoryMB", 0)
+    calls = []
+
+    def fake_fetch_json(url, body=None, headers=None):
+        calls.append((url, body))
+        return {
+            "cards": [
+                {
+                    "identifier": "abc123",
+                    "name": "Opt",
+                    "dpi": 1200,
+                    "extension": "png",
+                    "downloadLink": "https://download/opt.png",
+                    "smallThumbnailUrl": "https://thumb/small",
+                    "mediumThumbnailUrl": "https://thumb/medium",
+                    "sourceId": 7,
+                    "sourceName": "Test Source",
+                }
+            ],
+            "count": 1,
+        }
+
+    monkeypatch.setattr(high_res, "_fetch_json", fake_fetch_json)
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt")
+    high_res.search_high_res_page(context, "https://example.com/", 300, 1200)
+    high_res.search_high_res_page(context, "https://example.com/", 300, 1200)
+
+    assert len(calls) == 2
+    high_res.clear_all_high_res_caches()
+
+
+def test_fetch_preview_bytes_uses_shared_image_cache(monkeypatch):
+    high_res.clear_all_high_res_caches()
+    monkeypatch.setattr(high_res.CFG, "HighResImageCacheMemoryMB", 64)
+    calls = []
+
+    def fake_fetch_bytes(url):
+        calls.append(url)
+        return b"thumb-bytes"
+
+    monkeypatch.setattr(high_res, "_fetch_bytes", fake_fetch_bytes)
+
+    first = high_res.fetch_preview_bytes("https://thumb/small", cache_kind="thumbnail")
+    second = high_res.fetch_preview_bytes("https://thumb/small", cache_kind="thumbnail")
+
+    assert first == b"thumb-bytes"
+    assert second == b"thumb-bytes"
+    assert len(calls) == 1
+    high_res.clear_all_high_res_caches()
+
+
+def test_get_double_faced_back_context_uses_cache(monkeypatch):
+    high_res.clear_all_high_res_caches()
+    calls = []
+    print_dict = {
+        "backsides": {"scryfall_mid_1_delver-of-secrets.png": "__scryfall_mid_1_insectile-aberration.png"}
+    }
+    front_context = high_res.CardContext(
+        filename="scryfall_mid_1_delver-of-secrets.png",
+        query="Delver of Secrets",
+        display_name="Delver of Secrets",
+        set_code="mid",
+        collector_number="1",
+    )
+
+    def fake_fetch_json(url, body=None, headers=None):
+        calls.append(url)
+        return {
+            "card_faces": [{"name": "Delver of Secrets"}, {"name": "Insectile Aberration"}]
+        }
+
+    monkeypatch.setattr(high_res, "_fetch_json", fake_fetch_json)
+
+    first = high_res.get_double_faced_back_context(
+        print_dict,
+        "scryfall_mid_1_delver-of-secrets.png",
+        front_context,
+    )
+    second = high_res.get_double_faced_back_context(
+        print_dict,
+        "scryfall_mid_1_delver-of-secrets.png",
+        front_context,
+    )
+
+    assert first == second
+    assert len(calls) == 1
+    high_res.clear_all_high_res_caches()
+
+
 def test_apply_high_res_candidate_writes_bytes_and_tracks_override(tmp_path):
     candidate = high_res.HighResCandidate(
         identifier="drive123",

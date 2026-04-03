@@ -401,6 +401,31 @@ class LineEditWithLabel(WidgetWithLabel):
         super().__init__(label_text, text)
 
 
+class HighResThumbnailLoader(QtCore.QThread):
+    thumbnail_loaded = QtCore.pyqtSignal(int, str, bytes)
+
+    def __init__(self, page_token, items):
+        super().__init__()
+        self._page_token = page_token
+        self._items = items
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        for row, identifier, url in self._items:
+            if self._cancelled:
+                return
+            try:
+                data = high_res.fetch_preview_bytes(url, cache_kind="thumbnail")
+            except Exception:
+                continue
+            if self._cancelled:
+                return
+            self.thumbnail_loaded.emit(self._page_token, identifier, data)
+
+
 class HighResPickerDialog(QDialog):
     def __init__(self, parent, print_dict, img_dict, card_name):
         super().__init__(parent)
@@ -419,6 +444,8 @@ class HighResPickerDialog(QDialog):
         self._page_size = 60
         self._page_start = 0
         self._total_result_count = 0
+        self._thumbnail_loader = None
+        self._page_token = 0
 
         info_text = QLabel(
             f"Searching MPCFill for front-face replacements for "
@@ -537,6 +564,9 @@ class HighResPickerDialog(QDialog):
             self._status_label.setText(
                 "Set your DPI filters and click Search to load MPCFill results."
             )
+            QtCore.QTimer.singleShot(
+                0, lambda: self.refresh_results(reset_page=True)
+            )
         else:
             self._status_label.setText(
                 "Set `HighRes.BackendURL` in config.ini to the MPCFill base URL, "
@@ -560,6 +590,66 @@ class HighResPickerDialog(QDialog):
         loading_window = popup(window, title, debug_mode)
         loading_window.show_during_work(work)
         del loading_window
+
+    def _stop_thumbnail_loader(self):
+        if self._thumbnail_loader is not None:
+            self._thumbnail_loader.cancel()
+            self._thumbnail_loader.wait(2000)
+            self._thumbnail_loader = None
+
+    def closeEvent(self, event):
+        self._stop_thumbnail_loader()
+        super().closeEvent(event)
+
+    def reject(self):
+        self._stop_thumbnail_loader()
+        super().reject()
+
+    @QtCore.pyqtSlot(int, str, bytes)
+    def _handle_thumbnail_loaded(self, page_token, identifier, data):
+        if page_token != self._page_token:
+            return
+
+        self._thumbnail_cache[identifier] = data
+        for row, candidate in enumerate(self._candidates):
+            if candidate.identifier != identifier:
+                continue
+            item = self._results_list.item(row)
+            if item is None:
+                return
+            pixmap = QPixmap()
+            if pixmap.loadFromData(data):
+                item.setIcon(QIcon(pixmap))
+            return
+
+    def _start_thumbnail_loader(self, candidates):
+        self._stop_thumbnail_loader()
+        pending = []
+        for row, candidate in enumerate(candidates):
+            if not candidate.small_thumbnail_url:
+                continue
+            if candidate.identifier in self._thumbnail_cache:
+                continue
+            cached = high_res.get_cached_thumbnail_bytes(candidate.small_thumbnail_url)
+            if cached is not None:
+                self._thumbnail_cache[candidate.identifier] = cached
+                item = self._results_list.item(row)
+                if item is not None:
+                    pixmap = QPixmap()
+                    if pixmap.loadFromData(cached):
+                        item.setIcon(QIcon(pixmap))
+                continue
+            pending.append((row, candidate.identifier, candidate.small_thumbnail_url))
+
+        if not pending:
+            return
+
+        self._page_token += 1
+        loader = HighResThumbnailLoader(self._page_token, pending)
+        loader.thumbnail_loaded.connect(self._handle_thumbnail_loaded)
+        loader.finished.connect(lambda: setattr(self, "_thumbnail_loader", None))
+        self._thumbnail_loader = loader
+        loader.start()
 
     def _update_pagination_controls(self):
         if self._total_result_count <= 0:
@@ -610,11 +700,10 @@ class HighResPickerDialog(QDialog):
             self._max_dpi.setValue(max_dpi)
 
         search_page = None
-        thumbnail_cache = {}
         error = None
 
         def do_search():
-            nonlocal search_page, thumbnail_cache, error
+            nonlocal search_page, error
             try:
                 search_page = high_res.search_high_res_page(
                     self._context,
@@ -624,14 +713,6 @@ class HighResPickerDialog(QDialog):
                     page_start=self._page_start,
                     page_size=self._page_size,
                 )
-                for candidate in search_page.candidates:
-                    if candidate.small_thumbnail_url:
-                        try:
-                            thumbnail_cache[candidate.identifier] = high_res.fetch_preview_bytes(
-                                candidate.small_thumbnail_url
-                            )
-                        except Exception:
-                            continue
             except Exception as exc:
                 error = exc
 
@@ -647,7 +728,6 @@ class HighResPickerDialog(QDialog):
         results = [] if search_page is None else search_page.candidates
         self._total_result_count = 0 if search_page is None else search_page.total_count
         self._candidates = results
-        self._thumbnail_cache.update(thumbnail_cache)
         self._results_list.clear()
         self._apply_button.setEnabled(False)
         self._preview_label.setText("Select a result to preview it here.")
@@ -678,6 +758,7 @@ class HighResPickerDialog(QDialog):
                 item.setIcon(QIcon(pixmap))
             self._results_list.addItem(item)
 
+        self._start_thumbnail_loader(results)
         self._results_list.setCurrentRow(0)
 
     def _selected_candidate(self, row=None):
@@ -714,7 +795,7 @@ class HighResPickerDialog(QDialog):
                     if not url:
                         preview_bytes = None
                         return
-                    preview_bytes = high_res.fetch_preview_bytes(url)
+                    preview_bytes = high_res.fetch_preview_bytes(url, cache_kind="preview")
                 except Exception as exc:
                     error = exc
 

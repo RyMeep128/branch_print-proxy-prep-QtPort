@@ -14,6 +14,9 @@ def test_load_config_returns_defaults_when_file_missing(monkeypatch, tmp_path):
     assert cfg.EnableUncrop is True
     assert cfg.DisplayColumns == 5
     assert cfg.HighResBackendURL == "https://mpcfill.com/"
+    assert cfg.HighResCacheTTLSeconds == 15 * 60
+    assert cfg.HighResSearchCacheMemoryMB == 24
+    assert cfg.HighResImageCacheMemoryMB == 64
 
 
 def test_save_config_and_load_config_round_trip(monkeypatch, tmp_path):
@@ -26,6 +29,9 @@ def test_save_config_and_load_config_round_trip(monkeypatch, tmp_path):
     cfg.EnableUncrop = False
     cfg.DisplayColumns = 7
     cfg.HighResBackendURL = "https://example.com/"
+    cfg.HighResCacheTTLSeconds = 30
+    cfg.HighResSearchCacheMemoryMB = 8
+    cfg.HighResImageCacheMemoryMB = 16
 
     config.save_config(cfg)
     loaded = config.load_config()
@@ -37,3 +43,6 @@ def test_save_config_and_load_config_round_trip(monkeypatch, tmp_path):
     assert loaded.EnableUncrop is False
     assert loaded.DisplayColumns == 7
     assert loaded.HighResBackendURL == "https://example.com/"
+    assert loaded.HighResCacheTTLSeconds == 30
+    assert loaded.HighResSearchCacheMemoryMB == 8
+    assert loaded.HighResImageCacheMemoryMB == 16

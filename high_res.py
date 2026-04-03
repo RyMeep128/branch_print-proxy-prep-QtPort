@@ -1,12 +1,15 @@
 import base64
 import json
 import os
+from collections import OrderedDict
 import re
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 
+from config import CFG
 
 GOOGLE_DRIVE_IMAGE_API_URL = (
     "https://script.google.com/macros/s/"
@@ -58,6 +61,152 @@ class HighResSearchPage:
 class BacksideMatch:
     filename: str
     candidate: HighResCandidate
+
+
+class _ApproximateLRUCache:
+    def __init__(self, max_bytes_getter: Callable[[], int], ttl_seconds_getter: Callable[[], int]):
+        self._entries: OrderedDict[tuple, tuple[float, object, int]] = OrderedDict()
+        self._current_bytes = 0
+        self._max_bytes_getter = max_bytes_getter
+        self._ttl_seconds_getter = ttl_seconds_getter
+
+    def clear(self):
+        self._entries.clear()
+        self._current_bytes = 0
+
+    def get(self, key: tuple):
+        now = time.time()
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        expires_at, value, size = entry
+        if now >= expires_at:
+            del self._entries[key]
+            self._current_bytes -= size
+            return None
+        self._entries.move_to_end(key)
+        return value
+
+    def set(self, key: tuple, value, size: int):
+        expires_at = time.time() + max(1, int(self._ttl_seconds_getter()))
+        old = self._entries.pop(key, None)
+        if old is not None:
+            self._current_bytes -= old[2]
+        self._entries[key] = (expires_at, value, max(0, int(size)))
+        self._entries.move_to_end(key)
+        self._current_bytes += max(0, int(size))
+        self._evict_if_needed()
+
+    def _evict_if_needed(self):
+        self._purge_expired()
+        max_bytes = max(1, int(self._max_bytes_getter()))
+        while self._current_bytes > max_bytes and self._entries:
+            _key, (_expires_at, _value, size) = self._entries.popitem(last=False)
+            self._current_bytes -= size
+
+    def _purge_expired(self):
+        now = time.time()
+        expired_keys = [
+            key for key, (expires_at, _value, _size) in self._entries.items()
+            if now >= expires_at
+        ]
+        for key in expired_keys:
+            _expires_at, _value, size = self._entries.pop(key)
+            self._current_bytes -= size
+
+
+def _ttl_seconds() -> int:
+    return max(1, int(getattr(CFG, "HighResCacheTTLSeconds", 15 * 60)))
+
+
+def _search_cache_limit_bytes() -> int:
+    return max(1, int(getattr(CFG, "HighResSearchCacheMemoryMB", 24)) * 1024 * 1024)
+
+
+def _image_cache_limit_bytes() -> int:
+    return max(1, int(getattr(CFG, "HighResImageCacheMemoryMB", 64)) * 1024 * 1024)
+
+
+_SEARCH_PAGE_CACHE = _ApproximateLRUCache(_search_cache_limit_bytes, _ttl_seconds)
+_IMAGE_CACHE = _ApproximateLRUCache(_image_cache_limit_bytes, _ttl_seconds)
+_DOUBLE_FACE_CONTEXT_CACHE = _ApproximateLRUCache(lambda: 1024 * 1024, _ttl_seconds)
+
+
+def _build_search_cache_key(
+    backend_url: str,
+    query: str,
+    min_dpi: int,
+    max_dpi: int,
+    page_start: int,
+    page_size: int,
+    source_ids: list[int] | None,
+) -> tuple:
+    return (
+        _standardize_url(backend_url).strip().lower(),
+        query.strip().casefold(),
+        int(min_dpi),
+        int(max_dpi),
+        int(page_start),
+        int(page_size),
+        tuple(source_ids or MPCFILL_SOURCE_IDS),
+    )
+
+
+def clear_search_cache():
+    _SEARCH_PAGE_CACHE.clear()
+
+
+def clear_image_cache():
+    _IMAGE_CACHE.clear()
+
+
+def clear_double_face_cache():
+    _DOUBLE_FACE_CONTEXT_CACHE.clear()
+
+
+def clear_all_high_res_caches():
+    clear_search_cache()
+    clear_image_cache()
+    clear_double_face_cache()
+
+
+def _page_size_bytes(page: "HighResSearchPage") -> int:
+    payload = {
+        "total_count": page.total_count,
+        "page_start": page.page_start,
+        "page_size": page.page_size,
+        "candidates": [
+            {
+                "identifier": candidate.identifier,
+                "name": candidate.name,
+                "dpi": candidate.dpi,
+                "extension": candidate.extension,
+                "download_link": candidate.download_link,
+                "small_thumbnail_url": candidate.small_thumbnail_url,
+                "medium_thumbnail_url": candidate.medium_thumbnail_url,
+                "source_id": candidate.source_id,
+                "source_name": candidate.source_name,
+            }
+            for candidate in page.candidates
+        ],
+    }
+    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def _image_cache_key(kind: str, url: str) -> tuple:
+    return (kind, url)
+
+
+def get_cached_thumbnail_bytes(url: str) -> bytes | None:
+    return _IMAGE_CACHE.get(_image_cache_key("thumbnail", url))
+
+
+def get_cached_preview_bytes(url: str) -> bytes | None:
+    return _IMAGE_CACHE.get(_image_cache_key("preview", url))
+
+
+def _cache_image_bytes(kind: str, url: str, data: bytes):
+    _IMAGE_CACHE.set(_image_cache_key(kind, url), data, len(data))
 
 
 def _standardize_url(url: str) -> str:
@@ -208,6 +357,21 @@ def search_high_res_page(
 ) -> HighResSearchPage:
     validate_backend_url(backend_url)
     fetch_json = fetch_json or _fetch_json
+    cache_key = _build_search_cache_key(
+        backend_url,
+        context.query,
+        min_dpi,
+        max_dpi,
+        page_start,
+        page_size,
+        source_ids,
+    )
+    now = time.time()
+    if fetch_json is _fetch_json:
+        cached_page = _SEARCH_PAGE_CACHE.get(cache_key)
+        if cached_page is not None:
+            return cached_page
+
     payload = build_search_payload(
         context.query,
         min_dpi,
@@ -234,12 +398,15 @@ def search_high_res_page(
         for card in cards
         if card.get("identifier")
     ]
-    return HighResSearchPage(
+    result = HighResSearchPage(
         candidates=candidates,
         total_count=int(response.get("count", len(candidates))),
         page_start=max(0, int(page_start)),
         page_size=max(1, int(page_size)),
     )
+    if fetch_json is _fetch_json:
+        _SEARCH_PAGE_CACHE.set(cache_key, result, _page_size_bytes(result))
+    return result
 
 
 def search_high_res_candidates(
@@ -290,10 +457,27 @@ def download_high_res_image(
 
 
 def fetch_preview_bytes(
-    url: str, fetch_bytes: Callable[[str], bytes] | None = None
+    url: str,
+    fetch_bytes: Callable[[str], bytes] | None = None,
+    cache_kind: str = "preview",
 ) -> bytes:
     fetch_bytes = fetch_bytes or _fetch_bytes
-    return fetch_bytes(url)
+    if not url:
+        return b""
+
+    cached = None
+    if fetch_bytes is _fetch_bytes:
+        if cache_kind == "thumbnail":
+            cached = get_cached_thumbnail_bytes(url)
+        else:
+            cached = get_cached_preview_bytes(url)
+        if cached is not None:
+            return cached
+
+    data = fetch_bytes(url)
+    if fetch_bytes is _fetch_bytes:
+        _cache_image_bytes(cache_kind, url, data)
+    return data
 
 
 def _build_scryfall_lookup_url(context: CardContext) -> str:
@@ -319,6 +503,18 @@ def get_double_faced_back_context(
         return None
 
     fetch_json = fetch_json or _fetch_json
+    cache_key = (
+        card_name,
+        backside_name,
+        front_context.display_name.casefold(),
+        front_context.set_code or "",
+        front_context.collector_number or "",
+    )
+    if fetch_json is _fetch_json:
+        cached_context = _DOUBLE_FACE_CONTEXT_CACHE.get(cache_key)
+        if cached_context is not None:
+            return cached_context
+
     lookup_url = _build_scryfall_lookup_url(front_context)
     card_data = fetch_json(lookup_url)
     faces = card_data.get("card_faces") or []
@@ -329,13 +525,16 @@ def get_double_faced_back_context(
     if not back_face_name:
         return None
 
-    return CardContext(
+    result = CardContext(
         filename=backside_name,
         query=back_face_name,
         display_name=back_face_name,
         set_code=front_context.set_code,
         collector_number=front_context.collector_number,
     )
+    if fetch_json is _fetch_json:
+        _DOUBLE_FACE_CONTEXT_CACHE.set(cache_key, result, len(back_face_name.encode("utf-8")) + 128)
+    return result
 
 
 def _normalize_search_name(value: str) -> str:
@@ -473,7 +672,7 @@ def apply_high_res_candidate(
         invalidate_cached_card_artifacts(print_dict, image_dir, backside_match.filename)
 
     overrides = print_dict.setdefault("high_res_front_overrides", {})
-    overrides[card_name] = {
+    override = {
         "identifier": candidate.identifier,
         "name": candidate.name,
         "dpi": candidate.dpi,
@@ -483,10 +682,8 @@ def apply_high_res_candidate(
         "source_name": candidate.source_name,
         "small_thumbnail_url": candidate.small_thumbnail_url,
         "medium_thumbnail_url": candidate.medium_thumbnail_url,
-        "back_identifier": (
-            backside_match.candidate.identifier if backside_match is not None else None
-        ),
-        "back_download_link": (
-            backside_match.candidate.download_link if backside_match is not None else None
-        ),
     }
+    if backside_match is not None:
+        override["back_identifier"] = backside_match.candidate.identifier
+        override["back_download_link"] = backside_match.candidate.download_link
+    overrides[card_name] = override
