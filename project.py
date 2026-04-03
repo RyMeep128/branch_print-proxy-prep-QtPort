@@ -8,10 +8,19 @@ import util
 import image
 from config import CFG
 from constants import page_sizes
-from models import ProjectState, as_project_state, sync_project_container
+from models import ProjectState, as_project_state
 
 
 logger = logging.getLogger(__name__)
+
+
+def _sync_legacy_project_dict(target, state: ProjectState) -> ProjectState:
+    if isinstance(target, ProjectState):
+        target.copy_from(state)
+        return target
+    target.clear()
+    target.update(state.to_dict())
+    return state
 
 
 def _parse_scryfall_card_metadata(card_name):
@@ -111,7 +120,7 @@ def init_dict(print_dict, img_dict, warn_fn=None):
                     "Cache Reset",
                     "The image cache could not be loaded and was reset. Thumbnails will be rebuilt.",
                 )
-    return sync_project_container(print_dict, state)
+    return _sync_legacy_project_dict(print_dict, state)
 
 
 def init_images(print_dict, img_dict, print_fn):
@@ -139,7 +148,7 @@ def init_images(print_dict, img_dict, print_fn):
     img_cache = state.img_cache
     if image.need_cache_previews(crop_dir, img_dict, image_dir):
         image.cache_previews(img_cache, image_dir, crop_dir, print_fn, img_dict)
-    return sync_project_container(print_dict, state)
+    return _sync_legacy_project_dict(print_dict, state)
 
 
 def refresh_after_image_changes(print_dict, img_dict, print_fn, warn_fn=None):
@@ -186,7 +195,7 @@ def clear_old_cards(print_dict, img_dict):
         util.write_json_atomic(img_cache, img_dict)
 
     init_dict(state, img_dict)
-    sync_project_container(print_dict, state)
+    _sync_legacy_project_dict(print_dict, state)
     return deleted_count
 
 

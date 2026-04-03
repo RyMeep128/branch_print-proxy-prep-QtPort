@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Mapping, MutableMapping
+from typing import Any, Mapping
 
 from config import CFG
 from constants import page_sizes
@@ -156,33 +156,6 @@ class HighResOverride:
         return result
 
 
-class _DataclassValueMap(MutableMapping[str, dict[str, Any]]):
-    def __init__(self, storage: dict[str, Any], parser):
-        self._storage = storage
-        self._parser = parser
-
-    def __getitem__(self, key: str) -> dict[str, Any]:
-        return self._storage[key].to_dict()
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        if hasattr(value, "to_dict"):
-            self._storage[key] = value
-        else:
-            self._storage[key] = self._parser(value)
-
-    def __delitem__(self, key: str) -> None:
-        del self._storage[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._storage)
-
-    def __len__(self) -> int:
-        return len(self._storage)
-
-    def to_dict(self) -> dict[str, dict[str, Any]]:
-        return {key: value.to_dict() for key, value in self._storage.items()}
-
-
 @dataclass
 class ProjectState:
     image_dir: str = "images"
@@ -198,28 +171,6 @@ class ProjectState:
     card_metadata_store: dict[str, CardMetadata] = field(default_factory=dict)
     high_res_front_overrides_store: dict[str, HighResOverride] = field(default_factory=dict)
     render: RenderSettings = field(default_factory=RenderSettings.default)
-
-    _KEY_MAP = {
-        "image_dir": "image_dir",
-        "img_cache": "img_cache",
-        "cards": "cards",
-        "backside_enabled": "backside_enabled",
-        "backside_default": "backside_default",
-        "backside_offset": "backside_offset",
-        "backsides": "backsides",
-        "backside_short_edge": "backside_short_edge",
-        "oversized_enabled": "oversized_enabled",
-        "oversized": "oversized",
-    }
-    _RENDER_KEYS = {"pagesize", "extended_guides", "orient", "bleed_edge", "filename"}
-
-    @property
-    def card_metadata(self) -> _DataclassValueMap:
-        return _DataclassValueMap(self.card_metadata_store, CardMetadata.from_dict)
-
-    @property
-    def high_res_front_overrides(self) -> _DataclassValueMap:
-        return _DataclassValueMap(self.high_res_front_overrides_store, HighResOverride.from_dict)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> "ProjectState":
@@ -258,8 +209,8 @@ class ProjectState:
             "backside_short_edge": dict(self.backside_short_edge),
             "oversized_enabled": self.oversized_enabled,
             "oversized": dict(self.oversized),
-            "card_metadata": self.card_metadata.to_dict(),
-            "high_res_front_overrides": self.high_res_front_overrides.to_dict(),
+            "card_metadata": self.card_metadata_dict(),
+            "high_res_front_overrides": self.high_res_front_overrides_dict(),
         }
         result.update(self.render.to_dict())
         return result
@@ -334,6 +285,12 @@ class ProjectState:
         self.card_metadata_store.pop(card_name, None)
         self.high_res_front_overrides_store.pop(card_name, None)
 
+    def card_metadata_dict(self) -> dict[str, dict[str, Any]]:
+        return {
+            key: value.to_dict()
+            for key, value in self.card_metadata_store.items()
+        }
+
     def get_card_metadata(self, card_name: str) -> dict[str, Any] | None:
         metadata = self.card_metadata_store.get(card_name)
         return None if metadata is None else metadata.to_dict()
@@ -343,6 +300,12 @@ class ProjectState:
             self.card_metadata_store[card_name] = metadata
         else:
             self.card_metadata_store[card_name] = CardMetadata.from_dict(metadata)
+
+    def high_res_front_overrides_dict(self) -> dict[str, dict[str, Any]]:
+        return {
+            key: value.to_dict()
+            for key, value in self.high_res_front_overrides_store.items()
+        }
 
     def get_high_res_override(self, card_name: str) -> dict[str, Any] | None:
         override = self.high_res_front_overrides_store.get(card_name)
@@ -387,99 +350,11 @@ class ProjectState:
             if card_name not in self.cards:
                 self.cards[card_name] = 0 if card_name.startswith("__") else 1
 
-    # Transitional compatibility helpers for unchanged UI call sites.
-    def __getitem__(self, key: str) -> Any:
-        if key in self._KEY_MAP:
-            return getattr(self, self._KEY_MAP[key])
-        if key in self._RENDER_KEYS:
-            return getattr(self.render, key)
-        if key == "card_metadata":
-            return self.card_metadata
-        if key == "high_res_front_overrides":
-            return self.high_res_front_overrides
-        raise KeyError(key)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        if key in self._KEY_MAP:
-            setattr(self, self._KEY_MAP[key], value)
-            return
-        if key in self._RENDER_KEYS:
-            setattr(self.render, key, value)
-            return
-        if key == "card_metadata":
-            self.card_metadata_store = {
-                str(item_key): CardMetadata.from_dict(item_value)
-                for item_key, item_value in _coerce_plain_dict(value).items()
-            }
-            return
-        if key == "high_res_front_overrides":
-            self.high_res_front_overrides_store = {
-                str(item_key): HighResOverride.from_dict(item_value)
-                for item_key, item_value in _coerce_plain_dict(value).items()
-            }
-            return
-        raise KeyError(key)
-
-    def __delitem__(self, key: str) -> None:
-        raise KeyError(f"Top-level project key deletion is not supported: {key}")
-
-    def __iter__(self) -> Iterator[str]:
-        yield from [
-            "image_dir",
-            "img_cache",
-            "cards",
-            "backside_enabled",
-            "backside_default",
-            "backside_offset",
-            "backsides",
-            "backside_short_edge",
-            "oversized_enabled",
-            "oversized",
-            "card_metadata",
-            "high_res_front_overrides",
-            "pagesize",
-            "extended_guides",
-            "orient",
-            "bleed_edge",
-            "filename",
-        ]
-
-    def __len__(self) -> int:
-        return 17
-
-    def __contains__(self, key: object) -> bool:
-        return isinstance(key, str) and (
-            key in self._KEY_MAP
-            or key in self._RENDER_KEYS
-            or key in {"card_metadata", "high_res_front_overrides"}
-        )
-
-    def get(self, key: str, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def setdefault(self, key: str, default: Any) -> Any:
-        if key in self:
-            return self[key]
-        self[key] = default
-        return self[key]
-
 
 def as_project_state(project_like: ProjectState | Mapping[str, Any] | None) -> ProjectState:
     if isinstance(project_like, ProjectState):
         return project_like
     return ProjectState.from_dict(project_like)
-
-
-def sync_project_container(target: ProjectState | MutableMapping[str, Any], state: ProjectState) -> ProjectState:
-    if isinstance(target, ProjectState):
-        target.copy_from(state)
-        return target
-    target.clear()
-    target.update(state.to_dict())
-    return state
 
 
 def project_to_dict(project_like: ProjectState | Mapping[str, Any]) -> dict[str, Any]:

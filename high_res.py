@@ -14,10 +14,19 @@ from typing import Callable
 from config import CFG
 from constants import cwd
 from image import image_from_bytes
-from models import as_project_state, sync_project_container
+from models import ProjectState, as_project_state
 import util
 
 logger = logging.getLogger(__name__)
+
+
+def _sync_legacy_project_dict(target, state: ProjectState) -> ProjectState:
+    if isinstance(target, ProjectState):
+        target.copy_from(state)
+        return target
+    target.clear()
+    target.update(state.to_dict())
+    return state
 
 GOOGLE_DRIVE_IMAGE_API_URL = (
     "https://script.google.com/macros/s/"
@@ -477,7 +486,7 @@ def _validate_downloaded_image_bytes(data: bytes) -> bytes:
     return normalized
 
 
-def build_card_context(card_name: str, print_dict: dict) -> CardContext:
+def build_card_context(card_name: str, print_dict: ProjectState | dict) -> CardContext:
     state = as_project_state(print_dict)
     metadata = state.get_card_metadata(card_name) or {}
     override = state.get_high_res_override(card_name) or {}
@@ -760,7 +769,7 @@ def _build_scryfall_lookup_url(context: CardContext) -> str:
 
 
 def get_double_faced_back_context(
-    print_dict: dict,
+    print_dict: ProjectState | dict,
     card_name: str,
     front_context: CardContext,
     fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
@@ -849,7 +858,7 @@ def find_matching_backside_candidate(
     return sorted(candidates, key=sort_key)[0]
 
 
-def invalidate_cached_card_artifacts(print_dict: dict, image_dir: str, card_name: str):
+def invalidate_cached_card_artifacts(print_dict: ProjectState | dict, image_dir: str, card_name: str):
     state = as_project_state(print_dict)
     crop_dir = os.path.join(image_dir, "crop")
     if os.path.exists(crop_dir):
@@ -879,7 +888,7 @@ def invalidate_cached_card_artifacts(print_dict: dict, image_dir: str, card_name
 
 
 def maybe_find_matching_backside(
-    print_dict: dict,
+    print_dict: ProjectState | dict,
     card_name: str,
     front_context: CardContext,
     front_candidate: HighResCandidate,
@@ -909,7 +918,7 @@ def maybe_find_matching_backside(
 
 
 def apply_high_res_candidate(
-    print_dict: dict,
+    print_dict: ProjectState | dict,
     image_dir: str,
     card_name: str,
     candidate: HighResCandidate,
@@ -960,4 +969,4 @@ def apply_high_res_candidate(
         override["back_identifier"] = backside_match.candidate.identifier
         override["back_download_link"] = backside_match.candidate.download_link
     state.set_high_res_override(card_name, override)
-    return sync_project_container(print_dict, state)
+    return _sync_legacy_project_dict(print_dict, state)

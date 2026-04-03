@@ -11,7 +11,7 @@ from util import inch_to_point, mm_to_inch, mm_to_point
 from config import CFG
 from constants import card_size_without_bleed_inch
 from image import read_image, image_to_bytes, rotate_image, Rotation
-from models import as_project_state
+from models import ProjectState, as_project_state
 
 
 class CrossSegment(Enum):
@@ -182,11 +182,7 @@ def generate(print_dict, crop_dir, size, pdf_path, print_fn):
                                 page=p + 1, img_idx=i + 1, img_name=card_name
                             )
                         )
-                        backside = (
-                            print_dict["backsides"][card_name]
-                            if card_name in print_dict["backsides"]
-                            else print_dict["backside_default"]
-                        )
+                        backside = state.backsides.get(card_name, state.backside_default)
                         draw_image(
                             backside,
                             is_oversized,
@@ -205,15 +201,16 @@ def generate(print_dict, crop_dir, size, pdf_path, print_fn):
 
 
 def distribute_cards_to_pages(print_dict, columns, rows):
+    state = as_project_state(print_dict)
     images_per_page = columns * rows
     oversized_images_per_page = (columns // 2) * rows
 
-    short_edge_dict = print_dict["backside_short_edge"]
-    oversized_dict = print_dict["oversized"] if print_dict["oversized_enabled"] else {}
+    short_edge_dict = state.backside_short_edge
+    oversized_dict = state.oversized if state.oversized_enabled else {}
 
     # throw all images n times into a list
     images = []
-    for img, num in print_dict["cards"].items():
+    for img, num in state.cards.items():
         is_short_edge = short_edge_dict[img] if img in short_edge_dict else False
         is_oversized = oversized_dict[img] if img in oversized_dict else False
         images.extend([(img, is_short_edge, is_oversized)] * num)
@@ -267,12 +264,13 @@ def distribute_cards_to_pages(print_dict, columns, rows):
 
 
 def make_backside_pages(print_dict, pages):
-    back_dict = print_dict["backsides"]
+    state = as_project_state(print_dict)
+    back_dict = state.backsides
 
     def backside_of_img(img_pair):
         (img, is_short_edge) = img_pair
         return (
-            (back_dict[img] if img in back_dict else print_dict["backside_default"]),
+            (back_dict[img] if img in back_dict else state.backside_default),
             is_short_edge,
         )
 

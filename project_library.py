@@ -5,8 +5,17 @@ import datetime
 import json
 
 from constants import cwd
-from models import as_project_state, project_to_dict, sync_project_container
+from models import ProjectState, as_project_state, project_to_dict
 from util import write_json_atomic
+
+
+def _sync_legacy_project_dict(target, state: ProjectState) -> ProjectState:
+    if isinstance(target, ProjectState):
+        target.copy_from(state)
+        return target
+    target.clear()
+    target.update(state.to_dict())
+    return state
 
 
 def projects_root():
@@ -352,7 +361,7 @@ def materialize_draft_project(display_name, print_dict, thumbnail_card=None):
             state.backside_default = default_back_name
 
     write_json_atomic(path, state.to_dict(), ensure_ascii=False)
-    sync_project_container(print_dict, state)
+    _sync_legacy_project_dict(print_dict, state)
     data["projects"].append(entry)
     save_library(data)
     reset_draft_workspace()

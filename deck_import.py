@@ -10,9 +10,18 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Callable
 
-from models import as_project_state, sync_project_container
+from models import ProjectState, as_project_state
 
 logger = logging.getLogger(__name__)
+
+
+def _sync_legacy_project_dict(target, state: ProjectState) -> ProjectState:
+    if isinstance(target, ProjectState):
+        target.copy_from(state)
+        return target
+    target.clear()
+    target.update(state.to_dict())
+    return state
 
 
 PRINT_FN = Callable[[str], None]
@@ -285,7 +294,7 @@ def apply_imported_counts(print_dict: dict, imported_cards: list[ImportedCard]):
     state = as_project_state(print_dict)
     for imported_card in imported_cards:
         state.set_card_count(imported_card.filename, imported_card.entry.count)
-    return sync_project_container(print_dict, state)
+    return _sync_legacy_project_dict(print_dict, state)
 
 
 def apply_imported_metadata(print_dict: dict, imported_cards: list[ImportedCard]):
@@ -299,7 +308,7 @@ def apply_imported_metadata(print_dict: dict, imported_cards: list[ImportedCard]
                 "collector_number": imported_card.entry.collector_number,
             },
         )
-    return sync_project_container(print_dict, state)
+    return _sync_legacy_project_dict(print_dict, state)
 
 
 def apply_import_result(print_dict: dict, import_result: ImportResult):
@@ -309,7 +318,7 @@ def apply_import_result(print_dict: dict, import_result: ImportResult):
     if import_result.backside_pairs:
         for front_name, back_name in import_result.backside_pairs.items():
             state.set_backside(front_name, back_name)
-    return sync_project_container(print_dict, state)
+    return _sync_legacy_project_dict(print_dict, state)
 
 
 def read_decklist_file(path: str) -> str:
