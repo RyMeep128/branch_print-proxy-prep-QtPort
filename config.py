@@ -11,7 +11,7 @@ class GlobalConfig:
         self.EnableUncrop = True
         self.DisplayColumns = 5
         self.HighResBackendURL = "https://mpcfill.com/"
-        self.HighResCacheTTLSeconds = 15 * 60
+        self.HighResCacheTTLSeconds = 60 * 60
         self.HighResSearchCacheMemoryMB = 24
         self.HighResImageCacheMemoryMB = 64
 
@@ -32,7 +32,7 @@ def load_config() -> GlobalConfig:
             "HighRes.BackendURL", "https://mpcfill.com/"
         )
         parsed_config.HighResCacheTTLSeconds = def_cfg.getint(
-            "HighRes.CacheTTLSeconds", 15 * 60
+            "HighRes.CacheTTLSeconds", 60 * 60
         )
         parsed_config.HighResSearchCacheMemoryMB = def_cfg.getint(
             "HighRes.SearchCacheMemoryMB", 24

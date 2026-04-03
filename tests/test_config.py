@@ -14,7 +14,7 @@ def test_load_config_returns_defaults_when_file_missing(monkeypatch, tmp_path):
     assert cfg.EnableUncrop is True
     assert cfg.DisplayColumns == 5
     assert cfg.HighResBackendURL == "https://mpcfill.com/"
-    assert cfg.HighResCacheTTLSeconds == 15 * 60
+    assert cfg.HighResCacheTTLSeconds == 60 * 60
     assert cfg.HighResSearchCacheMemoryMB == 24
     assert cfg.HighResImageCacheMemoryMB == 64
 

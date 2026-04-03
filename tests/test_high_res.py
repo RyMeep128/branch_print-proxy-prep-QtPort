@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 
 import high_res
 
@@ -269,7 +270,7 @@ def test_search_high_res_page_cache_expires(monkeypatch):
     high_res.clear_all_high_res_caches()
 
 
-def test_search_high_res_page_cache_respects_memory_limit(monkeypatch):
+def test_search_high_res_page_cache_respects_memory_limit_with_disk_fallback(monkeypatch):
     high_res.clear_all_high_res_caches()
     monkeypatch.setattr(high_res.CFG, "HighResSearchCacheMemoryMB", 0)
     calls = []
@@ -296,9 +297,61 @@ def test_search_high_res_page_cache_respects_memory_limit(monkeypatch):
     monkeypatch.setattr(high_res, "_fetch_json", fake_fetch_json)
     context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt")
     high_res.search_high_res_page(context, "https://example.com/", 300, 1200)
+    high_res._SEARCH_PAGE_CACHE.clear()
     high_res.search_high_res_page(context, "https://example.com/", 300, 1200)
 
-    assert len(calls) == 2
+    assert len(calls) == 1
+    high_res.clear_all_high_res_caches()
+
+
+def test_search_high_res_page_uses_disk_cache_across_memory_reset(monkeypatch, tmp_path):
+    high_res.clear_all_high_res_caches()
+    monkeypatch.setattr(high_res, "cwd", str(tmp_path))
+    calls = []
+
+    def fake_fetch_json(url, body=None, headers=None):
+        calls.append((url, body))
+        return {
+            "cards": [
+                {
+                    "identifier": "abc123",
+                    "name": "Opt",
+                    "dpi": 1200,
+                    "extension": "png",
+                    "downloadLink": "https://download/opt.png",
+                    "smallThumbnailUrl": "https://thumb/small",
+                    "mediumThumbnailUrl": "https://thumb/medium",
+                    "sourceId": 7,
+                    "sourceName": "Test Source",
+                }
+            ],
+            "count": 1274,
+        }
+
+    monkeypatch.setattr(high_res, "_fetch_json", fake_fetch_json)
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt")
+
+    first = high_res.search_high_res_page(
+        context,
+        "https://example.com/",
+        300,
+        1200,
+        page_start=0,
+        page_size=60,
+    )
+    high_res._SEARCH_PAGE_CACHE.clear()
+    second = high_res.search_high_res_page(
+        context,
+        "https://example.com/",
+        300,
+        1200,
+        page_start=0,
+        page_size=60,
+    )
+
+    assert first == second
+    assert len(calls) == 1
+    assert os.path.exists(high_res._high_res_cache_dir("search"))
     high_res.clear_all_high_res_caches()
 
 
@@ -319,6 +372,28 @@ def test_fetch_preview_bytes_uses_shared_image_cache(monkeypatch):
     assert first == b"thumb-bytes"
     assert second == b"thumb-bytes"
     assert len(calls) == 1
+    high_res.clear_all_high_res_caches()
+
+
+def test_fetch_preview_bytes_uses_disk_cache_across_memory_reset(monkeypatch, tmp_path):
+    high_res.clear_all_high_res_caches()
+    monkeypatch.setattr(high_res, "cwd", str(tmp_path))
+    calls = []
+
+    def fake_fetch_bytes(url):
+        calls.append(url)
+        return b"thumb-bytes"
+
+    monkeypatch.setattr(high_res, "_fetch_bytes", fake_fetch_bytes)
+
+    first = high_res.fetch_preview_bytes("https://thumb/small", cache_kind="thumbnail")
+    high_res._IMAGE_CACHE.clear()
+    second = high_res.fetch_preview_bytes("https://thumb/small", cache_kind="thumbnail")
+
+    assert first == b"thumb-bytes"
+    assert second == b"thumb-bytes"
+    assert len(calls) == 1
+    assert os.path.exists(high_res._high_res_cache_dir("image"))
     high_res.clear_all_high_res_caches()
 
 

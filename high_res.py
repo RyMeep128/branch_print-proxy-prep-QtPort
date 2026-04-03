@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import os
 from collections import OrderedDict
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from config import CFG
+from constants import cwd
 from image import image_from_bytes
 
 GOOGLE_DRIVE_IMAGE_API_URL = (
@@ -117,7 +119,7 @@ class _ApproximateLRUCache:
 
 
 def _ttl_seconds() -> int:
-    return max(1, int(getattr(CFG, "HighResCacheTTLSeconds", 15 * 60)))
+    return max(1, int(getattr(CFG, "HighResCacheTTLSeconds", 60 * 60)))
 
 
 def _search_cache_limit_bytes() -> int:
@@ -131,6 +133,128 @@ def _image_cache_limit_bytes() -> int:
 _SEARCH_PAGE_CACHE = _ApproximateLRUCache(_search_cache_limit_bytes, _ttl_seconds)
 _IMAGE_CACHE = _ApproximateLRUCache(_image_cache_limit_bytes, _ttl_seconds)
 _DOUBLE_FACE_CONTEXT_CACHE = _ApproximateLRUCache(lambda: 1024 * 1024, _ttl_seconds)
+
+
+def _high_res_cache_root() -> str:
+    return os.path.join(cwd, ".high_res_cache")
+
+
+def _high_res_cache_dir(kind: str) -> str:
+    return os.path.join(_high_res_cache_root(), kind)
+
+
+def _ensure_cache_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
+
+def _cache_filename_for_key(key: tuple) -> str:
+    payload = json.dumps(key, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _disk_cache_paths(kind: str, key: tuple) -> tuple[str, str]:
+    cache_dir = _high_res_cache_dir(kind)
+    cache_name = _cache_filename_for_key(key)
+    return (
+        os.path.join(cache_dir, cache_name + ".json"),
+        os.path.join(cache_dir, cache_name + ".bin"),
+    )
+
+
+def _purge_disk_cache_file(metadata_path: str, data_path: str | None = None):
+    for path in [metadata_path, data_path]:
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _read_disk_json_cache(kind: str, key: tuple):
+    metadata_path, data_path = _disk_cache_paths(kind, key)
+    if not os.path.exists(metadata_path):
+        return None
+
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as fp:
+            metadata = json.load(fp)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        _purge_disk_cache_file(metadata_path, data_path)
+        return None
+
+    expires_at = metadata.get("expires_at")
+    if not isinstance(expires_at, (int, float)) or time.time() >= float(expires_at):
+        _purge_disk_cache_file(metadata_path, data_path)
+        return None
+
+    return metadata.get("payload")
+
+
+def _write_disk_json_cache(kind: str, key: tuple, payload):
+    cache_dir = _high_res_cache_dir(kind)
+    _ensure_cache_dir(cache_dir)
+    metadata_path, _data_path = _disk_cache_paths(kind, key)
+    metadata = {
+        "expires_at": time.time() + _ttl_seconds(),
+        "payload": payload,
+    }
+    try:
+        with open(metadata_path, "w", encoding="utf-8") as fp:
+            json.dump(metadata, fp, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _read_disk_bytes_cache(kind: str, key: tuple) -> bytes | None:
+    metadata_path, data_path = _disk_cache_paths(kind, key)
+    if not os.path.exists(metadata_path) or not os.path.exists(data_path):
+        _purge_disk_cache_file(metadata_path, data_path)
+        return None
+
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as fp:
+            metadata = json.load(fp)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        _purge_disk_cache_file(metadata_path, data_path)
+        return None
+
+    expires_at = metadata.get("expires_at")
+    if not isinstance(expires_at, (int, float)) or time.time() >= float(expires_at):
+        _purge_disk_cache_file(metadata_path, data_path)
+        return None
+
+    try:
+        with open(data_path, "rb") as fp:
+            return fp.read()
+    except OSError:
+        _purge_disk_cache_file(metadata_path, data_path)
+        return None
+
+
+def _write_disk_bytes_cache(kind: str, key: tuple, payload: bytes):
+    cache_dir = _high_res_cache_dir(kind)
+    _ensure_cache_dir(cache_dir)
+    metadata_path, data_path = _disk_cache_paths(kind, key)
+    try:
+        with open(data_path, "wb") as fp:
+            fp.write(payload)
+        with open(metadata_path, "w", encoding="utf-8") as fp:
+            json.dump({"expires_at": time.time() + _ttl_seconds()}, fp)
+    except OSError:
+        _purge_disk_cache_file(metadata_path, data_path)
+
+
+def _clear_disk_cache(kind: str):
+    cache_dir = _high_res_cache_dir(kind)
+    if not os.path.exists(cache_dir):
+        return
+    for entry in os.listdir(cache_dir):
+        path = os.path.join(cache_dir, entry)
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def _build_search_cache_key(
@@ -155,10 +279,12 @@ def _build_search_cache_key(
 
 def clear_search_cache():
     _SEARCH_PAGE_CACHE.clear()
+    _clear_disk_cache("search")
 
 
 def clear_image_cache():
     _IMAGE_CACHE.clear()
+    _clear_disk_cache("image")
 
 
 def clear_double_face_cache():
@@ -172,7 +298,12 @@ def clear_all_high_res_caches():
 
 
 def _page_size_bytes(page: "HighResSearchPage") -> int:
-    payload = {
+    payload = _search_page_payload(page)
+    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def _search_page_payload(page: "HighResSearchPage") -> dict:
+    return {
         "total_count": page.total_count,
         "page_start": page.page_start,
         "page_size": page.page_size,
@@ -191,7 +322,29 @@ def _page_size_bytes(page: "HighResSearchPage") -> int:
             for candidate in page.candidates
         ],
     }
-    return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+
+def _search_page_from_payload(payload: dict) -> "HighResSearchPage":
+    return HighResSearchPage(
+        candidates=[
+            HighResCandidate(
+                identifier=candidate["identifier"],
+                name=candidate["name"],
+                dpi=int(candidate.get("dpi", 0)),
+                extension=candidate.get("extension", "png"),
+                download_link=candidate.get("download_link", ""),
+                small_thumbnail_url=candidate.get("small_thumbnail_url", ""),
+                medium_thumbnail_url=candidate.get("medium_thumbnail_url", ""),
+                source_id=int(candidate.get("source_id", 0)),
+                source_name=candidate.get("source_name", ""),
+            )
+            for candidate in payload.get("candidates", [])
+            if candidate.get("identifier")
+        ],
+        total_count=int(payload.get("total_count", 0)),
+        page_start=max(0, int(payload.get("page_start", 0))),
+        page_size=max(1, int(payload.get("page_size", 60))),
+    )
 
 
 def _image_cache_key(kind: str, url: str) -> tuple:
@@ -199,15 +352,33 @@ def _image_cache_key(kind: str, url: str) -> tuple:
 
 
 def get_cached_thumbnail_bytes(url: str) -> bytes | None:
-    return _IMAGE_CACHE.get(_image_cache_key("thumbnail", url))
+    key = _image_cache_key("thumbnail", url)
+    cached = _IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    cached = _read_disk_bytes_cache("image", key)
+    if cached is not None:
+        _IMAGE_CACHE.set(key, cached, len(cached))
+    return cached
 
 
 def get_cached_preview_bytes(url: str) -> bytes | None:
-    return _IMAGE_CACHE.get(_image_cache_key("preview", url))
+    key = _image_cache_key("preview", url)
+    cached = _IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    cached = _read_disk_bytes_cache("image", key)
+    if cached is not None:
+        _IMAGE_CACHE.set(key, cached, len(cached))
+    return cached
 
 
 def _cache_image_bytes(kind: str, url: str, data: bytes):
-    _IMAGE_CACHE.set(_image_cache_key(kind, url), data, len(data))
+    key = _image_cache_key(kind, url)
+    _IMAGE_CACHE.set(key, data, len(data))
+    _write_disk_bytes_cache("image", key, data)
 
 
 def _standardize_url(url: str) -> str:
@@ -446,6 +617,11 @@ def search_high_res_page(
         cached_page = _SEARCH_PAGE_CACHE.get(cache_key)
         if cached_page is not None:
             return cached_page
+        cached_payload = _read_disk_json_cache("search", cache_key)
+        if cached_payload is not None:
+            cached_page = _search_page_from_payload(cached_payload)
+            _SEARCH_PAGE_CACHE.set(cache_key, cached_page, _page_size_bytes(cached_page))
+            return cached_page
 
     payload = build_search_payload(
         context.query,
@@ -481,6 +657,7 @@ def search_high_res_page(
     )
     if fetch_json is _fetch_json:
         _SEARCH_PAGE_CACHE.set(cache_key, result, _page_size_bytes(result))
+        _write_disk_json_cache("search", cache_key, _search_page_payload(result))
     return result
 
 
