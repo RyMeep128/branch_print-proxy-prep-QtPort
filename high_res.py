@@ -47,6 +47,14 @@ class HighResCandidate:
 
 
 @dataclass(frozen=True)
+class HighResSearchPage:
+    candidates: list[HighResCandidate]
+    total_count: int
+    page_start: int
+    page_size: int
+
+
+@dataclass(frozen=True)
 class BacksideMatch:
     filename: str
     candidate: HighResCandidate
@@ -158,13 +166,14 @@ def build_search_payload(
     min_dpi: int,
     max_dpi: int,
     page_size: int = 60,
+    page_start: int = 0,
     source_ids: list[int] | None = None,
 ) -> dict:
     active_source_ids = source_ids or MPCFILL_SOURCE_IDS
     return {
         "cardTypes": [],
         "pageSize": page_size,
-        "pageStart": 0,
+        "pageStart": max(0, int(page_start)),
         "searchSettings": {
             "searchTypeSettings": {
                 "fuzzySearch": True,
@@ -187,21 +196,30 @@ def build_search_payload(
     }
 
 
-def search_high_res_candidates(
+def search_high_res_page(
     context: CardContext,
     backend_url: str,
     min_dpi: int,
     max_dpi: int,
+    page_start: int = 0,
+    page_size: int = 60,
     source_ids: list[int] | None = None,
     fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
-) -> list[HighResCandidate]:
+) -> HighResSearchPage:
     validate_backend_url(backend_url)
     fetch_json = fetch_json or _fetch_json
-    payload = build_search_payload(context.query, min_dpi, max_dpi, source_ids=source_ids)
+    payload = build_search_payload(
+        context.query,
+        min_dpi,
+        max_dpi,
+        page_size=page_size,
+        page_start=page_start,
+        source_ids=source_ids,
+    )
     url = format_backend_url(backend_url, "2/exploreSearch/")
     response = fetch_json(url, payload)
     cards = response.get("cards", [])
-    return [
+    candidates = [
         HighResCandidate(
             identifier=card["identifier"],
             name=card["name"],
@@ -216,6 +234,34 @@ def search_high_res_candidates(
         for card in cards
         if card.get("identifier")
     ]
+    return HighResSearchPage(
+        candidates=candidates,
+        total_count=int(response.get("count", len(candidates))),
+        page_start=max(0, int(page_start)),
+        page_size=max(1, int(page_size)),
+    )
+
+
+def search_high_res_candidates(
+    context: CardContext,
+    backend_url: str,
+    min_dpi: int,
+    max_dpi: int,
+    page_start: int = 0,
+    page_size: int = 60,
+    source_ids: list[int] | None = None,
+    fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
+) -> list[HighResCandidate]:
+    return search_high_res_page(
+        context,
+        backend_url,
+        min_dpi,
+        max_dpi,
+        page_start=page_start,
+        page_size=page_size,
+        source_ids=source_ids,
+        fetch_json=fetch_json,
+    ).candidates
 
 
 def download_high_res_image(

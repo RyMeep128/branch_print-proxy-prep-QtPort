@@ -416,6 +416,9 @@ class HighResPickerDialog(QDialog):
         self._thumbnail_cache = {}
         self._preview_cache = {}
         self._applied = False
+        self._page_size = 60
+        self._page_start = 0
+        self._total_result_count = 0
 
         info_text = QLabel(
             f"Searching MPCFill for front-face replacements for "
@@ -446,7 +449,7 @@ class HighResPickerDialog(QDialog):
         max_dpi.setValue(1500)
 
         search_button = QPushButton("Search")
-        search_button.clicked.connect(self.refresh_results)
+        search_button.clicked.connect(lambda: self.refresh_results(reset_page=True))
 
         filters_layout = QHBoxLayout()
         filters_layout.addWidget(WidgetWithLabel("Min DPI", min_dpi))
@@ -456,6 +459,24 @@ class HighResPickerDialog(QDialog):
 
         self._min_dpi = min_dpi
         self._max_dpi = max_dpi
+
+        prev_page_button = QPushButton("Previous 60")
+        prev_page_button.setEnabled(False)
+        prev_page_button.clicked.connect(self._go_to_previous_page)
+        self._prev_page_button = prev_page_button
+
+        next_page_button = QPushButton("Next 60")
+        next_page_button.setEnabled(False)
+        next_page_button.clicked.connect(self._go_to_next_page)
+        self._next_page_button = next_page_button
+
+        self._page_label = QLabel("Page 0 of 0")
+
+        pagination_layout = QHBoxLayout()
+        pagination_layout.addWidget(prev_page_button)
+        pagination_layout.addWidget(next_page_button)
+        pagination_layout.addWidget(self._page_label)
+        pagination_layout.addStretch()
 
         results_list = QListWidget()
         results_list.setIconSize(QtCore.QSize(90, 126))
@@ -507,6 +528,7 @@ class HighResPickerDialog(QDialog):
         layout.addWidget(info_text)
         layout.addWidget(self._current_source_label)
         layout.addLayout(filters_layout)
+        layout.addLayout(pagination_layout)
         layout.addWidget(self._status_label)
         layout.addLayout(content_layout)
         layout.addLayout(button_row)
@@ -539,7 +561,34 @@ class HighResPickerDialog(QDialog):
         loading_window.show_during_work(work)
         del loading_window
 
-    def refresh_results(self):
+    def _update_pagination_controls(self):
+        if self._total_result_count <= 0:
+            self._page_label.setText("Page 0 of 0")
+            self._prev_page_button.setEnabled(False)
+            self._next_page_button.setEnabled(False)
+            return
+
+        current_page = (self._page_start // self._page_size) + 1
+        total_pages = max(1, math.ceil(self._total_result_count / self._page_size))
+        self._page_label.setText(f"Page {current_page} of {total_pages}")
+        self._prev_page_button.setEnabled(self._page_start > 0)
+        self._next_page_button.setEnabled(
+            self._page_start + self._page_size < self._total_result_count
+        )
+
+    def _go_to_previous_page(self):
+        if self._page_start <= 0:
+            return
+        self._page_start = max(0, self._page_start - self._page_size)
+        self.refresh_results(reset_page=False)
+
+    def _go_to_next_page(self):
+        if self._page_start + self._page_size >= self._total_result_count:
+            return
+        self._page_start += self._page_size
+        self.refresh_results(reset_page=False)
+
+    def refresh_results(self, reset_page=False):
         if not CFG.HighResBackendURL.strip():
             self._warn(
                 "High-Res Backend Not Configured",
@@ -551,26 +600,31 @@ class HighResPickerDialog(QDialog):
             )
             return
 
+        if reset_page:
+            self._page_start = 0
+
         min_dpi = self._min_dpi.value()
         max_dpi = self._max_dpi.value()
         if min_dpi > max_dpi:
             max_dpi = min_dpi
             self._max_dpi.setValue(max_dpi)
 
-        results = []
+        search_page = None
         thumbnail_cache = {}
         error = None
 
         def do_search():
-            nonlocal results, thumbnail_cache, error
+            nonlocal search_page, thumbnail_cache, error
             try:
-                results = high_res.search_high_res_candidates(
+                search_page = high_res.search_high_res_page(
                     self._context,
                     CFG.HighResBackendURL,
                     min_dpi,
                     max_dpi,
+                    page_start=self._page_start,
+                    page_size=self._page_size,
                 )
-                for candidate in results:
+                for candidate in search_page.candidates:
                     if candidate.small_thumbnail_url:
                         try:
                             thumbnail_cache[candidate.identifier] = high_res.fetch_preview_bytes(
@@ -586,8 +640,12 @@ class HighResPickerDialog(QDialog):
         if error is not None:
             self._warn("High-Res Search Failed", str(error))
             self._status_label.setText("Search failed. Check the warning for details.")
+            self._total_result_count = 0
+            self._update_pagination_controls()
             return
 
+        results = [] if search_page is None else search_page.candidates
+        self._total_result_count = 0 if search_page is None else search_page.total_count
         self._candidates = results
         self._thumbnail_cache.update(thumbnail_cache)
         self._results_list.clear()
@@ -595,12 +653,20 @@ class HighResPickerDialog(QDialog):
         self._preview_label.setText("Select a result to preview it here.")
         self._preview_label.setPixmap(QPixmap())
         self._details_label.setText("")
+        self._update_pagination_controls()
 
         if not results:
             self._status_label.setText("No high-res matches found for this card.")
             return
 
-        self._status_label.setText(f"Found {len(results)} high-res options.")
+        page_number = (self._page_start // self._page_size) + 1
+        total_pages = max(1, math.ceil(self._total_result_count / self._page_size))
+        start_index = self._page_start + 1
+        end_index = min(self._page_start + len(results), self._total_result_count)
+        self._status_label.setText(
+            f"Showing {start_index}-{end_index} of {self._total_result_count} "
+            f"high-res options (page {page_number}/{total_pages})."
+        )
         for candidate in results:
             item = QListWidgetItem(
                 f"{candidate.name}\n{candidate.source_name} | {candidate.dpi} DPI"

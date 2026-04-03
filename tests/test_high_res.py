@@ -28,10 +28,14 @@ def test_build_search_payload_uses_dpi_filters_and_sources():
         "Opt",
         300,
         1200,
+        page_size=60,
+        page_start=120,
     )
 
     assert payload["query"] == "Opt"
     assert payload["cardTypes"] == []
+    assert payload["pageSize"] == 60
+    assert payload["pageStart"] == 120
     assert payload["searchSettings"]["filterSettings"]["minimumDPI"] == 300
     assert payload["searchSettings"]["filterSettings"]["maximumDPI"] == 1200
     assert payload["sortBy"] == "dateCreatedDescending"
@@ -74,6 +78,8 @@ def test_search_high_res_candidates_queries_backend():
         "https://example.com/",
         300,
         1200,
+        page_start=60,
+        page_size=60,
         fetch_json=fake_fetch_json,
     )
 
@@ -83,6 +89,40 @@ def test_search_high_res_candidates_queries_backend():
     assert results[0].source_id == 7
     assert calls[0][0] == "https://example.com/2/exploreSearch/"
     assert calls[0][1]["searchSettings"]["filterSettings"]["minimumDPI"] == 300
+    assert calls[0][1]["pageStart"] == 60
+    assert calls[0][1]["pageSize"] == 60
+
+
+def test_search_high_res_page_returns_total_count():
+    result = high_res.search_high_res_page(
+        high_res.CardContext(filename="x.png", query="Opt", display_name="Opt"),
+        "https://example.com/",
+        300,
+        1200,
+        page_start=120,
+        page_size=60,
+        fetch_json=lambda url, body=None, headers=None: {
+            "cards": [
+                {
+                    "identifier": "abc123",
+                    "name": "Opt",
+                    "dpi": 1200,
+                    "extension": "png",
+                    "downloadLink": "https://download/opt.png",
+                    "smallThumbnailUrl": "https://thumb/small",
+                    "mediumThumbnailUrl": "https://thumb/medium",
+                    "sourceId": 7,
+                    "sourceName": "Test Source",
+                }
+            ],
+            "count": 1274,
+        },
+    )
+
+    assert result.total_count == 1274
+    assert result.page_start == 120
+    assert result.page_size == 60
+    assert len(result.candidates) == 1
 
 
 def test_apply_high_res_candidate_writes_bytes_and_tracks_override(tmp_path):
