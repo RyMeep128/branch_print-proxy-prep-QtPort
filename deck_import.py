@@ -284,19 +284,21 @@ def import_entries(
 def apply_imported_counts(print_dict: dict, imported_cards: list[ImportedCard]):
     state = as_project_state(print_dict)
     for imported_card in imported_cards:
-        state["cards"][imported_card.filename] = imported_card.entry.count
+        state.set_card_count(imported_card.filename, imported_card.entry.count)
     return sync_project_container(print_dict, state)
 
 
 def apply_imported_metadata(print_dict: dict, imported_cards: list[ImportedCard]):
     state = as_project_state(print_dict)
-    metadata = state.setdefault("card_metadata", {})
     for imported_card in imported_cards:
-        metadata[imported_card.filename] = {
-            "name": imported_card.entry.name,
-            "set_code": imported_card.entry.set_code,
-            "collector_number": imported_card.entry.collector_number,
-        }
+        state.set_card_metadata(
+            imported_card.filename,
+            {
+                "name": imported_card.entry.name,
+                "set_code": imported_card.entry.set_code,
+                "collector_number": imported_card.entry.collector_number,
+            },
+        )
     return sync_project_container(print_dict, state)
 
 
@@ -305,9 +307,8 @@ def apply_import_result(print_dict: dict, import_result: ImportResult):
     apply_imported_counts(state, import_result.imported)
     apply_imported_metadata(state, import_result.imported)
     if import_result.backside_pairs:
-        state["backside_enabled"] = True
         for front_name, back_name in import_result.backside_pairs.items():
-            state["backsides"][front_name] = back_name
+            state.set_backside(front_name, back_name)
     return sync_project_container(print_dict, state)
 
 

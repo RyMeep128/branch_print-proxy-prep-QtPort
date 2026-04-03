@@ -42,42 +42,12 @@ def _detect_default_back_image(source_list, crop_list):
 
 def init_dict(print_dict, img_dict, warn_fn=None):
     state = as_project_state(print_dict)
-    default_page_size = CFG.DefaultPageSize
-    default_print_dict = {
-        # project options
-        "image_dir": "images",
-        "img_cache": "img.cache",
-        # list of all cards
-        "cards": {},
-        # backside options
-        "backside_enabled": False,
-        "backside_default": "__back.png",
-        "backside_offset": "0",
-        "backsides": {},
-        "backside_short_edge": {},
-        # oversized options
-        "oversized_enabled": False,
-        "oversized": {},
-        # metadata
-        "card_metadata": {},
-        "high_res_front_overrides": {},
-        # pdf generation options
-        "pagesize": (
-            default_page_size if default_page_size in page_sizes else "Letter"
-        ),
-        "extended_guides": True,
-        "orient": "Portrait",
-        "bleed_edge": "0",
-        "filename": "_printme",
-    }
-
-    # Initialize our default values
-    for key, value in default_print_dict.items():
-        if key not in state:
-            state[key] = value
+    if not state.pagesize:
+        default_page_size = CFG.DefaultPageSize
+        state.pagesize = default_page_size if default_page_size in page_sizes else "Letter"
 
     # Get project folders
-    image_dir = state["image_dir"]
+    image_dir = state.image_dir
     crop_dir = os.path.join(image_dir, "crop")
     image.init_image_folder(image_dir, crop_dir)
 
@@ -87,59 +57,45 @@ def init_dict(print_dict, img_dict, warn_fn=None):
 
     detected_default_back = _detect_default_back_image(source_list, crop_list)
     if detected_default_back is not None:
-        state["backside_default"] = detected_default_back
+        state.backside_default = detected_default_back
 
     # Check that we have all our cards accounted for
     for img in crop_list:
-        if img not in state["cards"].keys():
-            state["cards"][img] = 0 if img.startswith("__") else 1
+        if img not in state.cards:
+            state.cards[img] = 0 if img.startswith("__") else 1
 
     # And also check we don't have stale cards in here
     stale_images = []
-    for img in state["cards"].keys():
+    for img in state.cards.keys():
         if img not in crop_list and img not in source_list:
             stale_images.append(img)
-    for img in stale_images:
-        del state["cards"][img]
-        if img in state["backsides"]:
-            del state["backsides"][img]
-        if img in state["backside_short_edge"]:
-            del state["backside_short_edge"][img]
-        if img in state["oversized"]:
-            del state["oversized"][img]
-        if img in state["card_metadata"]:
-            del state["card_metadata"][img]
-        if img in state["high_res_front_overrides"]:
-            del state["high_res_front_overrides"][img]
+    state.remove_missing_cards(set(crop_list) | set(source_list))
 
     # Make sure we have a sensible bleed edge
-    bleed_edge = str(state["bleed_edge"])
+    bleed_edge = str(state.bleed_edge)
     bleed_edge = util.cap_bleed_edge_str(bleed_edge)
     if not util.is_number_string(bleed_edge):
         bleed_edge = "0"
-    state["bleed_edge"] = bleed_edge
+    state.bleed_edge = bleed_edge
 
     # Initialize the image amount
     for img in crop_list:
-        if img not in state["cards"].keys():
-            state["cards"][img] = 1
+        if img not in state.cards:
+            state.cards[img] = 1
 
     # Deselect images starting with __
     for img in crop_list:
-        state["cards"][img] = (
-            0 if img.startswith("__") else state["cards"][img]
-        )
+        state.cards[img] = 0 if img.startswith("__") else state.cards[img]
 
-    metadata = state["card_metadata"]
     for img in source_list:
-        if img in metadata:
+        if img in state.card_metadata_store:
             continue
         parsed_metadata = _parse_scryfall_card_metadata(img)
         if parsed_metadata is not None:
-            metadata[img] = parsed_metadata
+            state.set_card_metadata(img, parsed_metadata)
 
     # Initialize image cache
-    img_cache = state["img_cache"]
+    img_cache = state.img_cache
     if os.path.exists(img_cache):
         try:
             with open(img_cache, "r", encoding="utf-8") as fp:
@@ -160,12 +116,12 @@ def init_dict(print_dict, img_dict, warn_fn=None):
 
 def init_images(print_dict, img_dict, print_fn):
     state = as_project_state(print_dict)
-    image_dir = state["image_dir"]
+    image_dir = state.image_dir
     crop_dir = os.path.join(image_dir, "crop")
-    img_cache = state["img_cache"]
+    img_cache = state.img_cache
 
     # setup crops
-    bleed_edge = float(state["bleed_edge"])
+    bleed_edge = float(state.bleed_edge)
     if image.need_run_cropper(image_dir, crop_dir, bleed_edge, CFG.VibranceBump):
         image.cropper(
             image_dir,
@@ -180,7 +136,7 @@ def init_images(print_dict, img_dict, print_fn):
         )
 
     # setup image previews
-    img_cache = state["img_cache"]
+    img_cache = state.img_cache
     if image.need_cache_previews(crop_dir, img_dict, image_dir):
         image.cache_previews(img_cache, image_dir, crop_dir, print_fn, img_dict)
     return sync_project_container(print_dict, state)
@@ -194,9 +150,9 @@ def refresh_after_image_changes(print_dict, img_dict, print_fn, warn_fn=None):
 
 def clear_old_cards(print_dict, img_dict):
     state = as_project_state(print_dict)
-    image_dir = state["image_dir"]
+    image_dir = state.image_dir
     crop_dir = os.path.join(image_dir, "crop")
-    img_cache = state["img_cache"]
+    img_cache = state.img_cache
 
     image.init_image_folder(image_dir, crop_dir)
 

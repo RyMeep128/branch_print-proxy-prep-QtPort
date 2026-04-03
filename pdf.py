@@ -47,10 +47,10 @@ def draw_cross(can, x, y, segment, c=6, s=1):
 
 def generate(print_dict, crop_dir, size, pdf_path, print_fn):
     state = as_project_state(print_dict)
-    has_backside = state["backside_enabled"]
-    backside_offset = mm_to_point(float(state["backside_offset"]))
+    has_backside = state.backside_enabled
+    backside_offset = mm_to_point(float(state.backside_offset))
 
-    bleed_edge = float(state["bleed_edge"])
+    bleed_edge = float(state.bleed_edge)
     has_bleed_edge = bleed_edge > 0
 
     b = 0
@@ -63,7 +63,7 @@ def generate(print_dict, crop_dir, size, pdf_path, print_fn):
     (w, h) = card_size_without_bleed_inch
     w, h = inch_to_point((w + 2 * b)), inch_to_point((h + 2 * b))
     b = inch_to_point(b)
-    rotate = bool(state["orient"] == "Landscape")
+    rotate = bool(state.orient == "Landscape")
     size = tuple(size[::-1]) if rotate else size
     pw, ph = size
     pages = canvas.Canvas(pdf_path, pagesize=size)
@@ -73,7 +73,7 @@ def generate(print_dict, crop_dir, size, pdf_path, print_fn):
 
     images = distribute_cards_to_pages(state, cols, rows)
 
-    extended_guides = state["extended_guides"]
+    extended_guides = state.extended_guides
 
     @cache
     def get_img(img_path, rotation):

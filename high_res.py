@@ -468,6 +468,7 @@ def _validate_downloaded_image_bytes(data: bytes) -> bytes:
     try:
         decoded = image_from_bytes(normalized)
     except Exception as exc:
+        logger.warning("invalid high-res image payload during validation")
         raise ValueError("Downloaded high-res image data was not a valid image.") from exc
 
     if decoded is None or getattr(decoded, "size", 0) == 0:
@@ -478,8 +479,8 @@ def _validate_downloaded_image_bytes(data: bytes) -> bytes:
 
 def build_card_context(card_name: str, print_dict: dict) -> CardContext:
     state = as_project_state(print_dict)
-    metadata = state.get("card_metadata", {}).get(card_name, {})
-    override = state.get("high_res_front_overrides", {}).get(card_name, {})
+    metadata = state.get_card_metadata(card_name) or {}
+    override = state.get_high_res_override(card_name) or {}
     parsed_filename = _parse_scryfall_filename(card_name)
     query = (
         _normalize_card_query_name(metadata.get("name"))
@@ -701,7 +702,13 @@ def download_high_res_image(
     if download_link:
         try:
             return _validate_downloaded_image_bytes(fetch_bytes(download_link))
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "direct high-res download failed identifier=%s url=%s error=%s",
+                identifier,
+                download_link,
+                exc,
+            )
             pass
 
     url = GOOGLE_DRIVE_IMAGE_API_URL + "?" + urllib.parse.urlencode({"id": identifier})
@@ -710,6 +717,7 @@ def download_high_res_image(
         decoded = base64.b64decode(response, validate=True)
         return _validate_downloaded_image_bytes(decoded)
     except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("google drive fallback failed identifier=%s error=%s", identifier, exc)
         raise ValueError(
             "The selected high-res image could not be downloaded as a valid image file."
         ) from exc
@@ -758,7 +766,7 @@ def get_double_faced_back_context(
     fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
 ) -> CardContext | None:
     state = as_project_state(print_dict)
-    backside_name = state.get("backsides", {}).get(card_name)
+    backside_name = state.backsides.get(card_name)
     if not backside_name or not backside_name.startswith("__scryfall_"):
         return None
 
@@ -854,7 +862,7 @@ def invalidate_cached_card_artifacts(print_dict: dict, image_dir: str, card_name
                         pass
 
     cache_data = None
-    img_cache_path = state.get("img_cache")
+    img_cache_path = state.img_cache
     if img_cache_path and os.path.exists(img_cache_path):
         try:
             with open(img_cache_path, "r", encoding="utf-8") as fp:
@@ -937,7 +945,6 @@ def apply_high_res_candidate(
             fp.write(backside_bytes)
         invalidate_cached_card_artifacts(state, image_dir, backside_match.filename)
 
-    overrides = state.setdefault("high_res_front_overrides", {})
     override = {
         "identifier": candidate.identifier,
         "name": candidate.name,
@@ -952,5 +959,5 @@ def apply_high_res_candidate(
     if backside_match is not None:
         override["back_identifier"] = backside_match.candidate.identifier
         override["back_download_link"] = backside_match.candidate.download_link
-    overrides[card_name] = override
+    state.set_high_res_override(card_name, override)
     return sync_project_container(print_dict, state)

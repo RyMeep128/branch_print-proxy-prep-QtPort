@@ -343,13 +343,13 @@ def materialize_draft_project(display_name, print_dict, thumbnail_card=None):
     }
 
     state = as_project_state(print_dict)
-    state["image_dir"] = destination_image_dir
-    state["img_cache"] = os.path.join(destination_image_dir, "img.cache")
+    state.image_dir = destination_image_dir
+    state.img_cache = os.path.join(destination_image_dir, "img.cache")
     default_back_source = _shared_default_back_path()
     if default_back_source is not None:
         default_back_name = os.path.basename(default_back_source)
         if os.path.exists(os.path.join(destination_image_dir, default_back_name)):
-            state["backside_default"] = default_back_name
+            state.backside_default = default_back_name
 
     write_json_atomic(path, state.to_dict(), ensure_ascii=False)
     sync_project_container(print_dict, state)

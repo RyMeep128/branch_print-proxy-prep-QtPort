@@ -175,7 +175,7 @@ class _DataclassValueMap(MutableMapping[str, dict[str, Any]]):
 
 
 @dataclass
-class ProjectState(MutableMapping[str, Any]):
+class ProjectState:
     image_dir: str = "images"
     img_cache: str = "img.cache"
     cards: dict[str, int] = field(default_factory=dict)
@@ -255,6 +255,46 @@ class ProjectState(MutableMapping[str, Any]):
         result.update(self.render.to_dict())
         return result
 
+    @property
+    def pagesize(self) -> str:
+        return self.render.pagesize
+
+    @pagesize.setter
+    def pagesize(self, value: str) -> None:
+        self.render.pagesize = str(value)
+
+    @property
+    def extended_guides(self) -> bool:
+        return self.render.extended_guides
+
+    @extended_guides.setter
+    def extended_guides(self, value: Any) -> None:
+        self.render.extended_guides = bool(value)
+
+    @property
+    def orient(self) -> str:
+        return self.render.orient
+
+    @orient.setter
+    def orient(self, value: str) -> None:
+        self.render.orient = str(value)
+
+    @property
+    def bleed_edge(self) -> str:
+        return self.render.bleed_edge
+
+    @bleed_edge.setter
+    def bleed_edge(self, value: Any) -> None:
+        self.render.bleed_edge = str(value)
+
+    @property
+    def filename(self) -> str:
+        return self.render.filename
+
+    @filename.setter
+    def filename(self, value: str) -> None:
+        self.render.filename = str(value)
+
     def copy_from(self, other: "ProjectState") -> None:
         replacement = ProjectState.from_dict(other.to_dict())
         self.image_dir = replacement.image_dir
@@ -271,6 +311,74 @@ class ProjectState(MutableMapping[str, Any]):
         self.high_res_front_overrides_store = replacement.high_res_front_overrides_store
         self.render = replacement.render
 
+    def get_card_count(self, card_name: str, default: int = 0) -> int:
+        return int(self.cards.get(card_name, default))
+
+    def set_card_count(self, card_name: str, count: int) -> None:
+        self.cards[card_name] = int(count)
+
+    def remove_card(self, card_name: str) -> None:
+        self.cards.pop(card_name, None)
+        self.backsides.pop(card_name, None)
+        self.backside_short_edge.pop(card_name, None)
+        self.oversized.pop(card_name, None)
+        self.card_metadata_store.pop(card_name, None)
+        self.high_res_front_overrides_store.pop(card_name, None)
+
+    def get_card_metadata(self, card_name: str) -> dict[str, Any] | None:
+        metadata = self.card_metadata_store.get(card_name)
+        return None if metadata is None else metadata.to_dict()
+
+    def set_card_metadata(self, card_name: str, metadata: Mapping[str, Any] | CardMetadata) -> None:
+        if isinstance(metadata, CardMetadata):
+            self.card_metadata_store[card_name] = metadata
+        else:
+            self.card_metadata_store[card_name] = CardMetadata.from_dict(metadata)
+
+    def get_high_res_override(self, card_name: str) -> dict[str, Any] | None:
+        override = self.high_res_front_overrides_store.get(card_name)
+        return None if override is None else override.to_dict()
+
+    def set_high_res_override(
+        self,
+        card_name: str,
+        override: Mapping[str, Any] | HighResOverride,
+    ) -> None:
+        if isinstance(override, HighResOverride):
+            self.high_res_front_overrides_store[card_name] = override
+        else:
+            self.high_res_front_overrides_store[card_name] = HighResOverride.from_dict(override)
+
+    def set_backside(self, front_name: str, back_name: str) -> None:
+        self.backside_enabled = True
+        self.backsides[front_name] = back_name
+
+    def clear_card_links(self, card_name: str) -> None:
+        self.backsides.pop(card_name, None)
+        self.backside_short_edge.pop(card_name, None)
+        self.oversized.pop(card_name, None)
+
+    def apply_imported_card(
+        self,
+        filename: str,
+        count: int,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.set_card_count(filename, count)
+        if metadata is not None:
+            self.set_card_metadata(filename, metadata)
+
+    def remove_missing_cards(self, valid_names: set[str]) -> None:
+        for card_name in list(self.cards):
+            if card_name not in valid_names:
+                self.remove_card(card_name)
+
+    def ensure_card_defaults(self, card_names: list[str]) -> None:
+        for card_name in card_names:
+            if card_name not in self.cards:
+                self.cards[card_name] = 0 if card_name.startswith("__") else 1
+
+    # Transitional compatibility helpers for unchanged UI call sites.
     def __getitem__(self, key: str) -> Any:
         if key in self._KEY_MAP:
             return getattr(self, self._KEY_MAP[key])
@@ -329,6 +437,25 @@ class ProjectState(MutableMapping[str, Any]):
 
     def __len__(self) -> int:
         return 17
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and (
+            key in self._KEY_MAP
+            or key in self._RENDER_KEYS
+            or key in {"card_metadata", "high_res_front_overrides"}
+        )
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def setdefault(self, key: str, default: Any) -> Any:
+        if key in self:
+            return self[key]
+        self[key] = default
+        return self[key]
 
 
 def as_project_state(project_like: ProjectState | Mapping[str, Any] | None) -> ProjectState:

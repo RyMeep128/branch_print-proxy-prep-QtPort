@@ -9,6 +9,7 @@ import platform
 import threading
 import functools
 import subprocess
+import logging
 from enum import Enum
 from copy import deepcopy
 
@@ -63,7 +64,7 @@ import project
 import project_library
 import deck_import
 import high_res
-from config import CFG
+from config import CFG, save_config
 from constants import (
     card_ratio,
     card_size_without_bleed_inch,
@@ -73,6 +74,10 @@ from constants import (
 )
 from util import inch_to_mm, mm_to_inch, open_folder, point_to_inch, resource_path
 import fallback_image as fallback
+from background_tasks import HighResThumbnailLoader, make_popup_print_fn, popup
+from services import deck_import_service, high_res_service, pdf_service, project_service
+
+logger = logging.getLogger(__name__)
 
 _showing_exception_dialog = False
 
@@ -298,115 +303,6 @@ def init():
     return PrintProxyPrepApplication(sys.argv)
 
 
-def popup(window, middle_text, debug_thread):
-    class PopupWindow(QDialog):
-        def __init__(self, parent, text):
-            super().__init__(parent)
-
-            text_widget = QLabel(text)
-            layout = QVBoxLayout()
-            layout.addWidget(text_widget)
-            self.setLayout(layout)
-            self.setWindowFlags(
-                QtCore.Qt.WindowType.FramelessWindowHint
-                | QtCore.Qt.WindowType.WindowStaysOnTopHint
-            )
-
-            palette = self.palette()
-            palette.setColor(self.backgroundRole(), 0x111111)
-            self.setPalette(palette)
-            self.setAutoFillBackground(True)
-
-            self._text = text_widget
-            self._thread = None
-
-            self.update_text_impl(text)
-
-        def update_text(self, text, force_this_thread=False):
-            if self._thread is None or force_this_thread:
-                self.update_text_impl(text)
-            else:
-                self._thread._refresh.emit(text)
-
-        @QtCore.pyqtSlot(str)
-        def update_text_impl(self, text):
-            self.adjustSize()
-            self._text.setText(text)
-            self.adjustSize()
-
-            self.recenter()
-
-        def recenter(self):
-            parent = self.parentWidget()
-            if parent is not None:
-                center = self.rect().center()
-                parent_half_size = parent.rect().size() / 2
-                offset = (
-                    QtCore.QPoint(parent_half_size.width(), parent_half_size.height())
-                    - center
-                )
-                self.move(offset)
-
-        def show_during_work(self, work):
-            class WorkThread(QtCore.QThread):
-                _refresh = QtCore.pyqtSignal(str)
-
-                def __init__(self):
-                    super().__init__()
-                    self._exception_info = None
-
-                def run(self):
-                    if debug_thread:
-                        import debugpy
-
-                        debugpy.debug_this_thread()
-
-                    try:
-                        work()
-                    except Exception:
-                        self._exception_info = sys.exc_info()
-
-            work_thread = WorkThread()
-
-            self.open()
-            work_thread.finished.connect(lambda: self.close())
-            work_thread._refresh.connect(self.update_text_impl)
-            work_thread.start()
-            self._thread = work_thread
-            self.exec()
-            self._thread = None
-
-            if work_thread._exception_info is not None:
-                exc_type, exc_value, exc_traceback = work_thread._exception_info
-                if hasattr(exc_value, "add_note"):
-                    exc_value.add_note(f"Background task failed: {middle_text}")
-                raise exc_value.with_traceback(exc_traceback)
-
-        def showEvent(self, event):
-            super().showEvent(event)
-            self.recenter()
-
-        def resizeEvent(self, event):
-            super().resizeEvent(event)
-            self.recenter()
-            self.recenter()
-            self.recenter()
-
-    return PopupWindow(window, middle_text)
-
-
-def make_popup_print_fn(popup):
-    def popup_print_fn(text):
-        try:
-            print(text)
-        except Exception:
-            # Some card names contain Unicode not supported by the active console code page.
-            pass
-        popup.update_text(text)
-
-    return popup_print_fn
-
-
 def folder_dialog(parent=None):
     choice = QFileDialog.getExistingDirectory(
         parent,
@@ -469,7 +365,7 @@ def image_file_dialog(parent, folder):
 
 
 def load_project_file(application, print_dict, img_dict, json_path, print_fn):
-    loaded_successfully = project.load(
+    loaded_successfully = project_service.load_project(
         print_dict,
         img_dict,
         json_path,
@@ -783,31 +679,6 @@ class SettingsDialog(QDialog):
         save_config(CFG)
 
 
-class HighResThumbnailLoader(QtCore.QThread):
-    thumbnail_loaded = QtCore.pyqtSignal(int, str, bytes)
-
-    def __init__(self, page_token, items):
-        super().__init__()
-        self._page_token = page_token
-        self._items = items
-        self._cancelled = False
-
-    def cancel(self):
-        self._cancelled = True
-
-    def run(self):
-        for row, identifier, url in self._items:
-            if self._cancelled:
-                return
-            try:
-                data = high_res.fetch_preview_bytes(url, cache_kind="thumbnail")
-            except Exception:
-                continue
-            if self._cancelled:
-                return
-            self.thumbnail_loaded.emit(self._page_token, identifier, data)
-
-
 class HighResPickerDialog(QDialog):
     def __init__(self, parent, print_dict, img_dict, card_name):
         super().__init__(parent)
@@ -818,7 +689,7 @@ class HighResPickerDialog(QDialog):
         self._print_dict = print_dict
         self._img_dict = img_dict
         self._card_name = card_name
-        self._context = high_res.build_card_context(card_name, print_dict)
+        self._context = high_res_service.build_card_context(card_name, print_dict)
         self._candidates = []
         self._thumbnail_cache = {}
         self._preview_cache = {}
@@ -1093,7 +964,7 @@ class HighResPickerDialog(QDialog):
         def do_search():
             nonlocal search_page, error
             try:
-                search_page = high_res.search_high_res_page(
+                search_page = high_res_service.search_high_res_page(
                     self._context,
                     CFG.HighResBackendURL,
                     min_dpi,
@@ -1101,7 +972,7 @@ class HighResPickerDialog(QDialog):
                     page_start=self._page_start,
                     page_size=self._page_size,
                 )
-            except Exception as exc:
+            except ValueError as exc:
                 error = exc
 
         self._run_with_popup("Searching MPCFill...", do_search)
@@ -1184,7 +1055,7 @@ class HighResPickerDialog(QDialog):
                         preview_bytes = None
                         return
                     preview_bytes = high_res.fetch_preview_bytes(url, cache_kind="preview")
-                except Exception as exc:
+                except (OSError, ValueError) as exc:
                     error = exc
 
             self._run_with_popup("Loading preview...", load_preview)
@@ -1222,27 +1093,17 @@ class HighResPickerDialog(QDialog):
         def do_apply():
             nonlocal error, backside_match
             try:
-                backside_match = high_res.maybe_find_matching_backside(
-                    self._print_dict,
-                    self._card_name,
-                    self._context,
-                    candidate,
-                    CFG.HighResBackendURL,
-                )
-                high_res.apply_high_res_candidate(
-                    self._print_dict,
-                    self._print_dict["image_dir"],
-                    self._card_name,
-                    candidate,
-                    backside_match=backside_match,
-                )
-                project.refresh_after_image_changes(
+                result = high_res_service.apply_candidate_to_project(
                     self._print_dict,
                     self._img_dict,
+                    self._card_name,
+                    candidate,
+                    CFG.HighResBackendURL,
                     make_popup_print_fn(apply_window),
                     getattr(application, "warn_nonfatal", None),
                 )
-            except Exception as exc:
+                backside_match = result.backside_match
+            except (OSError, ValueError) as exc:
                 error = exc
 
         apply_window = popup(
@@ -2498,7 +2359,7 @@ class ActionsWidget(QGroupBox):
             print_dict["filename"] = os.path.splitext(os.path.basename(pdf_path))[0]
 
             def render_work():
-                pages = pdf.generate(
+                result = pdf_service.generate_pdf(
                     print_dict,
                     crop_dir,
                     page_sizes[print_dict["pagesize"]],
@@ -2506,10 +2367,10 @@ class ActionsWidget(QGroupBox):
                     make_popup_print_fn(render_window),
                 )
                 make_popup_print_fn(render_window)("Saving PDF...")
-                pages.save()
+                result.pages.save()
                 try:
                     subprocess.Popen([pdf_path], shell=True)
-                except Exception as e:
+                except OSError as e:
                     application.warn_nonfatal(
                         "PDF Open Failed",
                         f"The PDF was saved, but the app could not open it automatically.\n\n{e}",
@@ -2666,30 +2527,19 @@ class ActionsWidget(QGroupBox):
             def import_work():
                 nonlocal import_result, import_error
                 try:
-                    if archidekt_url:
-                        import_result = deck_import.import_archidekt_url(
-                            archidekt_url,
-                            print_dict["image_dir"],
-                            make_popup_print_fn(import_window),
-                        )
-                    else:
-                        import_result = deck_import.import_decklist(
-                            deck_text,
-                            print_dict["image_dir"],
-                            make_popup_print_fn(import_window),
-                        )
-                except Exception as exc:
-                    import_error = exc
-                    return
-                if import_result.imported:
-                    make_popup_print_fn(import_window)("Refreshing project...")
-                    project.refresh_after_image_changes(
+                    workflow_result = deck_import_service.import_into_project(
                         print_dict,
                         img_dict,
+                        print_dict["image_dir"],
                         make_popup_print_fn(import_window),
-                        application.warn_nonfatal,
+                        deck_text=deck_text,
+                        archidekt_url=archidekt_url,
+                        warn_fn=application.warn_nonfatal,
                     )
-                    deck_import.apply_import_result(print_dict, import_result)
+                    import_result = workflow_result.import_result
+                except (OSError, ValueError) as exc:
+                    import_error = exc
+                    return
 
             self.window().setEnabled(False)
             import_window = popup(
@@ -3409,6 +3259,7 @@ class AppShellWindow(QMainWindow):
             try:
                 result = load_fn()
             except Exception as exc:
+                logger.exception("editor state load failed title=%s", loader_title)
                 error = exc
 
         loading_window = popup(self, loader_title, self._application._debug_mode)
