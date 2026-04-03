@@ -173,6 +173,34 @@ def test_init_dict_backfills_scryfall_metadata_from_filename(monkeypatch, tmp_pa
     }
 
 
+def test_init_dict_promotes_detected_back_file_to_default(monkeypatch, tmp_path):
+    image_dir = tmp_path / "images"
+    crop_dir = image_dir / "crop"
+
+    def fake_list_image_files(folder):
+        if folder == str(crop_dir):
+            return ["card-a.png", "__back.jpg"]
+        if folder == str(image_dir):
+            return ["card-a.png", "__back.jpg"]
+        return []
+
+    monkeypatch.setattr(project.image, "init_image_folder", lambda *_args: None)
+    monkeypatch.setattr(project.image, "list_image_files", fake_list_image_files)
+
+    print_dict = {
+        "image_dir": str(image_dir),
+        "img_cache": str(tmp_path / "img.cache"),
+        "cards": {"card-a.png": 1},
+        "backside_default": "__back.png",
+        "bleed_edge": "0",
+    }
+    img_dict = {}
+
+    project.init_dict(print_dict, img_dict)
+
+    assert print_dict["backside_default"] == "__back.jpg"
+
+
 def test_load_resets_invalid_project_file_and_initializes_images(
     monkeypatch, tmp_path
 ):

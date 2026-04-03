@@ -59,6 +59,7 @@ from PyQt6.QtWidgets import (
 import pdf
 import image
 import project
+import project_library
 import deck_import
 import high_res
 from util import *
@@ -191,7 +192,6 @@ class PrintProxyPrepApplication(QApplication):
     def __init__(self, argv):
         super().__init__(argv)
 
-        self._json_path = os.path.join(cwd, "print.json")
         self._settings_loaded = False
         self._debug_mode = "--debug" in sys.argv
         self._pending_warnings = []
@@ -215,30 +215,60 @@ class PrintProxyPrepApplication(QApplication):
         self._pending_warnings.clear()
 
     def json_path(self):
-        return self._json_path
+        window = getattr(self, "_window", None)
+        if window is not None and hasattr(window, "current_project_path"):
+            return window.current_project_path()
+        return os.path.join(cwd, "print.json")
 
     def set_json_path(self, json_path):
-        self._json_path = json_path
+        window = getattr(self, "_window", None)
+        if window is not None and hasattr(window, "set_current_project_path"):
+            window.set_current_project_path(json_path)
 
     def save(self):
         settings = QtCore.QSettings("Proxy", "PDF Proxy Printer")
         settings.setValue("version", "1.0.0")
         settings.setValue("geometry", self._window.saveGeometry())
         settings.setValue("state", self._window.saveState())
-        settings.setValue("json", self._json_path)
 
     def load(self):
         settings = QtCore.QSettings("Proxy", "PDF Proxy Printer")
         if settings.contains("version"):
             self._window_geometry = settings.value("geometry")
             self._window_state = settings.value("state")
-            if settings.contains("json"):
-                self._json_path = settings.value("json")
-
             self._settings_loaded = True
 
     def warn_nonfatal(self, title, message):
         self._nonfatal_error.emit(title, message)
+
+    def show_home(self):
+        if hasattr(self, "_window"):
+            self._window.show_home()
+
+    def show_project_explorer(self):
+        if hasattr(self, "_window"):
+            self._window.show_project_explorer()
+
+    def open_blank_editor(self):
+        if hasattr(self, "_window"):
+            self._window.open_blank_editor()
+
+    def open_managed_project(self, project_id):
+        if hasattr(self, "_window"):
+            self._window.open_managed_project(project_id)
+
+    def import_and_open_project(self, path):
+        if hasattr(self, "_window"):
+            self._window.import_and_open_project(path)
+
+    def save_active_project(self, print_dict):
+        if hasattr(self, "_window"):
+            return self._window.save_active_project(print_dict)
+        return None
+
+    def autosave_managed_session(self):
+        if hasattr(self, "_window"):
+            self._window.autosave_managed_session()
 
     @QtCore.pyqtSlot(str, str)
     def _show_nonfatal_error(self, title, message):
@@ -1154,19 +1184,9 @@ class HighResPickerDialog(QDialog):
         self.accept()
 
 
-class MainWindow(QMainWindow):
+class EditorPage(QWidget):
     def __init__(self, tabs, scroll_area, options_container, options, print_preview):
         super().__init__()
-
-        self.setWindowTitle("PDF Proxy Printer")
-
-        icon = QIcon(resource_path() + "/proxy.png")
-        self.setWindowIcon(icon)
-        if sys.platform == "win32":
-            import ctypes
-
-            myappid = "proxy.printer"  # arbitrary string
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
         splitter = QSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -1183,7 +1203,10 @@ class MainWindow(QMainWindow):
         options_container.setMinimumWidth(min(sidebar_width, 600))
         splitter.setSizes([max(sidebar_width * 2, 900), sidebar_width])
 
-        self.setCentralWidget(splitter)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(splitter)
+        self.setLayout(layout)
 
         self._scroll_area = scroll_area
         self._options = options
@@ -2106,6 +2129,7 @@ class ActionsWidget(QGroupBox):
 
         cropper_button = QPushButton("Run Cropper")
         render_button = QPushButton("Render Document")
+        home_button = QPushButton("Home")
         save_button = QPushButton("Save Project")
         load_button = QPushButton("Load Project")
         set_images_button = QPushButton("Set Image Folder")
@@ -2117,6 +2141,7 @@ class ActionsWidget(QGroupBox):
         buttons = [
             cropper_button,
             render_button,
+            home_button,
             save_button,
             load_button,
             set_images_button,
@@ -2132,13 +2157,14 @@ class ActionsWidget(QGroupBox):
         layout.setColumnMinimumWidth(1, minimum_width + 10)
         layout.addWidget(cropper_button, 0, 0)
         layout.addWidget(render_button, 0, 1)
-        layout.addWidget(save_button, 1, 0)
-        layout.addWidget(load_button, 1, 1)
-        layout.addWidget(set_images_button, 2, 0)
-        layout.addWidget(open_images_button, 2, 1)
-        layout.addWidget(settings_button, 3, 0, 1, 2)
-        layout.addWidget(import_decklist_button, 4, 0, 1, 2)
-        layout.addWidget(clear_cards_button, 5, 0, 1, 2)
+        layout.addWidget(home_button, 1, 0, 1, 2)
+        layout.addWidget(save_button, 2, 0)
+        layout.addWidget(load_button, 2, 1)
+        layout.addWidget(set_images_button, 3, 0)
+        layout.addWidget(open_images_button, 3, 1)
+        layout.addWidget(settings_button, 4, 0, 1, 2)
+        layout.addWidget(import_decklist_button, 5, 0, 1, 2)
+        layout.addWidget(clear_cards_button, 6, 0, 1, 2)
 
         self.setLayout(layout)
 
@@ -2252,38 +2278,14 @@ class ActionsWidget(QGroupBox):
                 )
 
         def save_project():
-            new_project_json = project_file_dialog(
-                self, FileDialogType.Save, application.json_path()
-            )
-            if new_project_json is not None:
-                application.set_json_path(new_project_json)
-                with open(new_project_json, "w") as fp:
-                    json.dump(print_dict, fp)
+            application.save_active_project(print_dict)
 
         def load_project():
             new_project_json = project_file_dialog(
                 self, FileDialogType.Open, application.json_path()
             )
             if new_project_json is not None and os.path.exists(new_project_json):
-                load_succeeded = False
-
-                def load_project():
-                    nonlocal load_succeeded
-                    load_succeeded = load_project_file(
-                        application,
-                        print_dict,
-                        img_dict,
-                        new_project_json,
-                        make_popup_print_fn(reload_window),
-                    )
-
-                self.window().setEnabled(False)
-                reload_window = popup(self.window(), "Reloading project...", application._debug_mode)
-                reload_window.show_during_work(load_project)
-                del reload_window
-                self.window().refresh_widgets(print_dict)
-                self.window().refresh(print_dict, img_dict)
-                self.window().setEnabled(True)
+                application.import_and_open_project(new_project_json)
 
         def set_images_folder():
             new_image_dir = folder_dialog(self)
@@ -2298,7 +2300,7 @@ class ActionsWidget(QGroupBox):
                 crop_dir = os.path.join(image_dir, "crop")
                 if image.need_run_cropper(
                     image_dir, crop_dir, bleed_edge, CFG.VibranceBump
-                ) or image.need_cache_previews(crop_dir, img_dict):
+                ) or image.need_cache_previews(crop_dir, img_dict, image_dir):
 
                     def reload_work():
                         project.init_images(
@@ -2447,6 +2449,7 @@ class ActionsWidget(QGroupBox):
 
         render_button.clicked.connect(render)
         cropper_button.clicked.connect(run_cropper)
+        home_button.clicked.connect(application.show_home)
         save_button.clicked.connect(save_project)
         load_button.clicked.connect(load_project)
         set_images_button.clicked.connect(set_images_folder)
@@ -2760,30 +2763,397 @@ class CardTabs(QTabWidget):
         self.currentChanged.connect(current_changed)
 
 
-def window_setup(application, print_dict, img_dict):
-    card_grid = CardGrid(print_dict, img_dict)
-    scroll_area = CardScrollArea(print_dict, card_grid)
+class LandingPage(QWidget):
+    def __init__(self, application):
+        super().__init__()
 
-    print_preview = PrintPreview(print_dict, img_dict)
+        title = QLabel("Print Proxy Prep")
+        title.setStyleSheet("font-size: 28px; font-weight: bold;")
+        subtitle = QLabel(
+            "Choose a fresh editor session or browse your saved projects."
+        )
+        subtitle.setWordWrap(True)
 
-    tabs = CardTabs(print_dict, img_dict, scroll_area, print_preview)
+        editor_button = QPushButton("Editor")
+        explorer_button = QPushButton("Project Explorer")
+        editor_button.setMinimumHeight(56)
+        explorer_button.setMinimumHeight(56)
+        editor_button.clicked.connect(application.open_blank_editor)
+        explorer_button.clicked.connect(application.show_project_explorer)
 
-    options = OptionsWidget(application, print_dict, img_dict)
-    options_scroll_area = QScrollArea()
-    options_scroll_area.setWidgetResizable(True)
-    options_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-    options_scroll_area.setHorizontalScrollBarPolicy(
-        QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-    )
-    options_scroll_area.setWidget(options)
+        button_layout = QVBoxLayout()
+        button_layout.addWidget(editor_button)
+        button_layout.addWidget(explorer_button)
+        button_layout.setSpacing(14)
 
-    window = MainWindow(
-        tabs, scroll_area, options_scroll_area, options, print_preview
-    )
+        card = QGroupBox("Start")
+        card.setLayout(button_layout)
+
+        layout = QVBoxLayout()
+        layout.addStretch()
+        layout.addWidget(title, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(subtitle, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
+        layout.addSpacing(18)
+        layout.addWidget(card, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch()
+        self.setLayout(layout)
+
+
+class ProjectExplorerPage(QWidget):
+    def __init__(self, application):
+        super().__init__()
+
+        title = QLabel("Project Explorer")
+        title.setStyleSheet("font-size: 22px; font-weight: bold;")
+
+        project_list = QListWidget()
+        project_list.itemDoubleClicked.connect(lambda _item: self.open_selected())
+        self._project_list = project_list
+        self._application = application
+        self._projects = []
+
+        open_button = QPushButton("Open")
+        new_button = QPushButton("New Managed Project")
+        import_button = QPushButton("Import Project")
+        remove_button = QPushButton("Remove From Library")
+        home_button = QPushButton("Home")
+
+        open_button.clicked.connect(self.open_selected)
+        new_button.clicked.connect(self.create_project)
+        import_button.clicked.connect(self.import_project)
+        remove_button.clicked.connect(self.remove_selected)
+        home_button.clicked.connect(application.show_home)
+
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(open_button)
+        button_layout.addWidget(new_button)
+        button_layout.addWidget(import_button)
+        button_layout.addWidget(remove_button)
+        button_layout.addStretch()
+        button_layout.addWidget(home_button)
+
+        layout = QVBoxLayout()
+        layout.addWidget(title)
+        layout.addWidget(project_list)
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def refresh_projects(self):
+        self._projects = project_library.list_projects()
+        self._project_list.clear()
+        for project_entry in self._projects:
+            modified = project_entry.get("modified_at") or project_entry.get("last_opened_at")
+            modified_text = "Unknown"
+            if modified:
+                try:
+                    modified_text = datetime.datetime.fromisoformat(modified).astimezone().strftime("%Y-%m-%d %H:%M")
+                except ValueError:
+                    modified_text = modified
+            item = QListWidgetItem(
+                f"{project_entry.get('display_name', 'Untitled Project')}\nModified: {modified_text}"
+            )
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, project_entry.get("id"))
+            self._project_list.addItem(item)
+        if self._project_list.count() > 0:
+            self._project_list.setCurrentRow(0)
+
+    def selected_project_id(self):
+        item = self._project_list.currentItem()
+        if item is None:
+            return None
+        return item.data(QtCore.Qt.ItemDataRole.UserRole)
+
+    def open_selected(self):
+        project_id = self.selected_project_id()
+        if project_id is None:
+            return
+        self._application.open_managed_project(project_id)
+
+    def create_project(self):
+        project_entry = project_library.create_project()
+        self.refresh_projects()
+        self._application.open_managed_project(project_entry["id"])
+
+    def import_project(self):
+        selected_path = project_file_dialog(self, FileDialogType.Open, projects_root())
+        if selected_path is None or not os.path.exists(selected_path):
+            return
+        self._application.import_and_open_project(selected_path)
+        self.refresh_projects()
+
+    def remove_selected(self):
+        project_id = self.selected_project_id()
+        if project_id is None:
+            return
+        project_entry = project_library.get_project(project_id)
+        if project_entry is None:
+            self.refresh_projects()
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Remove Project",
+            (
+                f"Remove `{project_entry.get('display_name', 'Untitled Project')}` "
+                "from the project library?\n\nThe project file itself will not be deleted."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        project_library.remove_project(project_id)
+        self.refresh_projects()
+
+
+class AppShellWindow(QMainWindow):
+    def __init__(self, application):
+        super().__init__()
+
+        self.setWindowTitle("PDF Proxy Printer")
+        icon = QIcon(resource_path() + "/proxy.png")
+        self.setWindowIcon(icon)
+        if sys.platform == "win32":
+            import ctypes
+
+            myappid = "proxy.printer"
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+
+        self._application = application
+        self._current_project_path = os.path.join(cwd, "print.json")
+        self._active_session = None
+        self._editor_page = None
+
+        stack = QStackedWidget()
+        self._stack = stack
+        self._landing_page = LandingPage(application)
+        self._project_explorer_page = ProjectExplorerPage(application)
+        stack.addWidget(self._landing_page)
+        stack.addWidget(self._project_explorer_page)
+        self.setCentralWidget(stack)
+
+    def current_project_path(self):
+        if self._active_session is not None and self._active_session.get("project_path"):
+            return self._active_session["project_path"]
+        return self._current_project_path
+
+    def set_current_project_path(self, json_path):
+        self._current_project_path = json_path
+        if self._active_session is not None:
+            self._active_session["project_path"] = json_path
+
+    def _set_active_editor(self, editor_page, session):
+        if self._editor_page is not None:
+            self._stack.removeWidget(self._editor_page)
+            self._editor_page.deleteLater()
+        self._editor_page = editor_page
+        self._active_session = session
+        self._current_project_path = session.get("project_path") or self._current_project_path
+        self._stack.addWidget(editor_page)
+        self._stack.setCurrentWidget(editor_page)
+        self._update_window_title()
+
+    def _clear_active_session(self):
+        if self._editor_page is not None:
+            self._stack.removeWidget(self._editor_page)
+            self._editor_page.deleteLater()
+        self._active_session = None
+        self._editor_page = None
+        self._update_window_title()
+
+    def _update_window_title(self):
+        if self._active_session is None:
+            self.setWindowTitle("PDF Proxy Printer")
+            return
+        name = self._active_session.get("display_name") or "Untitled Project"
+        self.setWindowTitle(f"PDF Proxy Printer - {name}")
+
+    def _build_editor_page(self, print_dict, img_dict):
+        card_grid = CardGrid(print_dict, img_dict)
+        scroll_area = CardScrollArea(print_dict, card_grid)
+        print_preview = PrintPreview(print_dict, img_dict)
+        tabs = CardTabs(print_dict, img_dict, scroll_area, print_preview)
+        options = OptionsWidget(self._application, print_dict, img_dict)
+        options_scroll_area = QScrollArea()
+        options_scroll_area.setWidgetResizable(True)
+        options_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        options_scroll_area.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        options_scroll_area.setWidget(options)
+        return EditorPage(tabs, scroll_area, options_scroll_area, options, print_preview)
+
+    def _load_editor_state(self, loader_title, load_fn):
+        error = None
+        result = None
+
+        def work():
+            nonlocal error, result
+            try:
+                result = load_fn()
+            except Exception as exc:
+                error = exc
+
+        loading_window = popup(self, loader_title, self._application._debug_mode)
+        loading_window.show_during_work(work)
+        del loading_window
+        if error is not None:
+            raise error
+        return result
+
+    def show_home(self):
+        self._autosave_managed_session()
+        self._stack.setCurrentWidget(self._landing_page)
+        self._clear_active_session()
+
+    def show_project_explorer(self):
+        self._autosave_managed_session()
+        self._project_explorer_page.refresh_projects()
+        self._stack.setCurrentWidget(self._project_explorer_page)
+        self._clear_active_session()
+
+    def _autosave_managed_session(self):
+        if self._active_session is None or not self._active_session.get("managed"):
+            return
+        self.save_active_project(self._active_session["print_dict"])
+
+    def autosave_managed_session(self):
+        self._autosave_managed_session()
+
+    def open_blank_editor(self):
+        def build_blank():
+            print_dict = {}
+            img_dict = {}
+            project.init_dict(print_dict, img_dict, self._application.warn_nonfatal)
+            image_dir = print_dict["image_dir"]
+            crop_dir = os.path.join(image_dir, "crop")
+            if image.need_run_cropper(
+                image_dir, crop_dir, float(print_dict["bleed_edge"]), CFG.VibranceBump
+            ) or image.need_cache_previews(crop_dir, img_dict, image_dir):
+                project.init_images(
+                    print_dict,
+                    img_dict,
+                    make_popup_print_fn(blank_window),
+                )
+            return print_dict, img_dict
+
+        blank_window = popup(self, "Preparing editor...", self._application._debug_mode)
+        print_dict = {}
+        img_dict = {}
+
+        def blank_work():
+            nonlocal print_dict, img_dict
+            print_dict, img_dict = build_blank()
+
+        blank_window.show_during_work(blank_work)
+        del blank_window
+
+        editor_page = self._build_editor_page(print_dict, img_dict)
+        self._set_active_editor(
+            editor_page,
+            {
+                "project_id": None,
+                "project_path": None,
+                "display_name": "Unsaved Project",
+                "managed": False,
+                "print_dict": print_dict,
+                "img_dict": img_dict,
+            },
+        )
+
+    def open_managed_project(self, project_id):
+        project_entry = project_library.get_project(project_id)
+        if project_entry is None:
+            self._application.warn_nonfatal(
+                "Project Missing",
+                "That project could not be found in the project library.",
+            )
+            self._project_explorer_page.refresh_projects()
+            return
+
+        print_dict = {}
+        img_dict = {}
+
+        def load_work():
+            loaded = load_project_file(
+                self._application,
+                print_dict,
+                img_dict,
+                project_entry["path"],
+                make_popup_print_fn(reload_window),
+            )
+            if not loaded:
+                raise ValueError("The selected project could not be loaded.")
+
+        reload_window = popup(self, "Loading project...", self._application._debug_mode)
+        reload_window.show_during_work(load_work)
+        del reload_window
+
+        project_library.touch_opened(project_id)
+        editor_page = self._build_editor_page(print_dict, img_dict)
+        self._set_active_editor(
+            editor_page,
+            {
+                "project_id": project_id,
+                "project_path": project_entry["path"],
+                "display_name": project_entry["display_name"],
+                "managed": True,
+                "print_dict": print_dict,
+                "img_dict": img_dict,
+            },
+        )
+
+    def import_and_open_project(self, source_path):
+        project_entry = project_library.import_project(source_path)
+        self._project_explorer_page.refresh_projects()
+        self.open_managed_project(project_entry["id"])
+
+    def save_active_project(self, print_dict):
+        session = self._active_session
+        if session is None:
+            return None
+        if session.get("managed") and session.get("project_id") is not None:
+            saved = project_library.save_project(session["project_id"], print_dict)
+            if saved is not None:
+                session["project_path"] = saved["path"]
+                session["display_name"] = saved["display_name"]
+                self._current_project_path = saved["path"]
+                self._project_explorer_page.refresh_projects()
+                self._update_window_title()
+            return saved
+
+        created = project_library.create_project()
+        project_library.save_project(created["id"], print_dict)
+        session["managed"] = True
+        session["project_id"] = created["id"]
+        session["project_path"] = created["path"]
+        session["display_name"] = created["display_name"]
+        self._current_project_path = created["path"]
+        self._project_explorer_page.refresh_projects()
+        self._update_window_title()
+        return created
+
+    def refresh_widgets(self, print_dict):
+        if self._editor_page is not None:
+            self._editor_page.refresh_widgets(print_dict)
+
+    def refresh(self, print_dict, img_dict):
+        if self._editor_page is not None:
+            self._editor_page.refresh(print_dict, img_dict)
+
+    def refresh_preview(self, print_dict, img_dict):
+        if self._editor_page is not None:
+            self._editor_page.refresh_preview(print_dict, img_dict)
+
+
+def window_setup(application):
+    window = AppShellWindow(application)
     application.set_window(window)
-
     window.show()
     return window
+
+
+def projects_root():
+    return project_library.projects_root()
 
 
 def event_loop(application):

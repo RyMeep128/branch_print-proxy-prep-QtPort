@@ -22,6 +22,19 @@ def _parse_scryfall_card_metadata(card_name):
     }
 
 
+def _detect_default_back_image(source_list, crop_list):
+    back_candidates = sorted(
+        {
+            img_name
+            for img_name in list(source_list) + list(crop_list)
+            if img_name.startswith("__back")
+        }
+    )
+    if not back_candidates:
+        return None
+    return back_candidates[0]
+
+
 def init_dict(print_dict, img_dict, warn_fn=None):
     default_page_size = CFG.DefaultPageSize
     default_print_dict = {
@@ -65,6 +78,10 @@ def init_dict(print_dict, img_dict, warn_fn=None):
     # Get all image files in the crop directory
     crop_list = image.list_image_files(crop_dir)
     source_list = image.list_image_files(image_dir)
+
+    detected_default_back = _detect_default_back_image(source_list, crop_list)
+    if detected_default_back is not None:
+        print_dict["backside_default"] = detected_default_back
 
     # Check that we have all our cards accounted for
     for img in crop_list:
