@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from config import CFG
+from image import image_from_bytes
 
 GOOGLE_DRIVE_IMAGE_API_URL = (
     "https://script.google.com/macros/s/"
@@ -279,15 +280,47 @@ def _fetch_bytes(url: str) -> bytes:
         return response.read()
 
 
+def _validate_downloaded_image_bytes(data: bytes) -> bytes:
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise ValueError("Downloaded high-res image data was not bytes.")
+
+    normalized = bytes(data)
+    if len(normalized) == 0:
+        raise ValueError("Downloaded high-res image data was empty.")
+
+    try:
+        decoded = image_from_bytes(normalized)
+    except Exception as exc:
+        raise ValueError("Downloaded high-res image data was not a valid image.") from exc
+
+    if decoded is None or getattr(decoded, "size", 0) == 0:
+        raise ValueError("Downloaded high-res image data was not a valid image.")
+
+    return normalized
+
+
 def build_card_context(card_name: str, print_dict: dict) -> CardContext:
     metadata = print_dict.get("card_metadata", {}).get(card_name, {})
-    query = metadata.get("name") or _guess_name_from_filename(card_name)
+    override = print_dict.get("high_res_front_overrides", {}).get(card_name, {})
+    parsed_filename = _parse_scryfall_filename(card_name)
+    query = (
+        _normalize_card_query_name(metadata.get("name"))
+        or _normalize_override_name(override.get("name"))
+        or (parsed_filename["name"] if parsed_filename is not None else None)
+        or _guess_name_from_filename(card_name)
+    )
     return CardContext(
         filename=card_name,
         query=query,
         display_name=query,
-        set_code=metadata.get("set_code"),
-        collector_number=metadata.get("collector_number"),
+        set_code=metadata.get("set_code")
+        or (parsed_filename["set_code"] if parsed_filename is not None else None),
+        collector_number=metadata.get("collector_number")
+        or (
+            parsed_filename["collector_number"]
+            if parsed_filename is not None
+            else None
+        ),
     )
 
 
@@ -308,6 +341,48 @@ def _guess_name_from_filename(card_name: str) -> str:
         stem = match.group(1)
     stem = stem.replace("-", " ").strip("_ ")
     return re.sub(r"\s+", " ", stem).strip().title() or card_name
+
+
+def _parse_scryfall_filename(card_name: str) -> dict | None:
+    stem = os.path.splitext(os.path.basename(card_name))[0]
+    match = re.match(r"^(?:__)?scryfall_([^_]+)_([^_]+)_(.+)$", stem)
+    if match is None:
+        return None
+
+    return {
+        "set_code": match.group(1).lower(),
+        "collector_number": match.group(2),
+        "name": match.group(3).replace("-", " ").strip("_ ").replace("  ", " ").title(),
+    }
+
+
+def _normalize_override_name(value: str | None) -> str | None:
+    normalized = _normalize_card_query_name(value)
+    if not normalized:
+        return None
+
+    normalized = re.sub(
+        r"\s+\[[^\]]+\]\s+\{[^}]+\}\s+\(\d+\)\s*$", "", normalized
+    )
+    normalized = re.sub(
+        r"\s+\((?:normal|borderless|extended art|showcase|retro frame|full art|alt art|anime|foil|etched foil)\)\s*$",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized or None
+
+
+def _normalize_card_query_name(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    normalized = value.strip()
+    if "//" in normalized:
+        normalized = normalized.split("//", 1)[0].strip()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized or None
 
 
 def build_search_payload(
@@ -441,18 +516,18 @@ def download_high_res_image(
     fetch_text = fetch_text or _fetch_text
     if download_link:
         try:
-            return fetch_bytes(download_link)
+            return _validate_downloaded_image_bytes(fetch_bytes(download_link))
         except Exception:
             pass
 
     url = GOOGLE_DRIVE_IMAGE_API_URL + "?" + urllib.parse.urlencode({"id": identifier})
     response = fetch_text(url).strip()
     try:
-        return base64.b64decode(response, validate=True)
+        decoded = base64.b64decode(response, validate=True)
+        return _validate_downloaded_image_bytes(decoded)
     except Exception as exc:  # pragma: no cover - defensive
         raise ValueError(
-            "The high-res image download failed from MPCFill and the Google Drive "
-            "fallback did not return valid image data."
+            "The selected high-res image could not be downloaded as a valid image file."
         ) from exc
 
 
@@ -653,11 +728,7 @@ def apply_high_res_candidate(
         fetch_bytes,
         fetch_text,
     )
-    path = os.path.join(image_dir, card_name)
-    with open(path, "wb") as fp:
-        fp.write(image_bytes)
-
-    invalidate_cached_card_artifacts(print_dict, image_dir, card_name)
+    backside_bytes = None
 
     if backside_match is not None:
         backside_bytes = download_high_res_image(
@@ -666,6 +737,13 @@ def apply_high_res_candidate(
             fetch_bytes,
             fetch_text,
         )
+
+    path = os.path.join(image_dir, card_name)
+    with open(path, "wb") as fp:
+        fp.write(image_bytes)
+    invalidate_cached_card_artifacts(print_dict, image_dir, card_name)
+
+    if backside_match is not None and backside_bytes is not None:
         back_path = os.path.join(image_dir, backside_match.filename)
         with open(back_path, "wb") as fp:
             fp.write(backside_bytes)

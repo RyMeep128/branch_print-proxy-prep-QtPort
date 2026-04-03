@@ -64,7 +64,12 @@ class ArchidektHTMLParser(html.parser.HTMLParser):
         self._found_deck_tag = False
 
     def handle_starttag(self, tag, attrs):
-        if tag == "script" and dict(attrs) == {"id": "__NEXT_DATA__", "type": "application/json"}:
+        attributes = {key: value for key, value in attrs}
+        if (
+            tag == "script"
+            and attributes.get("id") == "__NEXT_DATA__"
+            and attributes.get("type") == "application/json"
+        ):
             self._found_deck_tag = True
 
     def handle_data(self, data):

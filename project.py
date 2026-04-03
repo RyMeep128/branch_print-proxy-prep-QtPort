@@ -1,11 +1,25 @@
 import os
 import json
 import time
+import re
 
 import util
 import image
 from config import *
 from constants import *
+
+
+def _parse_scryfall_card_metadata(card_name):
+    stem = os.path.splitext(os.path.basename(card_name))[0]
+    match = re.match(r"^(?:__)?scryfall_([^_]+)_([^_]+)_(.+)$", stem)
+    if match is None:
+        return None
+
+    return {
+        "name": re.sub(r"\s+", " ", match.group(3).replace("-", " ").strip("_ ")).strip().title(),
+        "set_code": match.group(1).lower(),
+        "collector_number": match.group(2),
+    }
 
 
 def init_dict(print_dict, img_dict, warn_fn=None):
@@ -92,6 +106,14 @@ def init_dict(print_dict, img_dict, warn_fn=None):
         print_dict["cards"][img] = (
             0 if img.startswith("__") else print_dict["cards"][img]
         )
+
+    metadata = print_dict["card_metadata"]
+    for img in source_list:
+        if img in metadata:
+            continue
+        parsed_metadata = _parse_scryfall_card_metadata(img)
+        if parsed_metadata is not None:
+            metadata[img] = parsed_metadata
 
     # Initialize image cache
     img_cache = print_dict["img_cache"]
@@ -185,11 +207,14 @@ def clear_old_cards(print_dict, img_dict):
 
 
 def load(print_dict, img_dict, json_path, print_fn, warn_fn=None):
+    loaded_successfully = False
     try:
         with open(json_path, "r") as fp:
             loaded_print_dict = json.load(fp)
+            print_dict.clear()
             for key, value in loaded_print_dict.items():
                 print_dict[key] = value
+            loaded_successfully = True
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         print_fn(f"Error: Failed loading project ({exc})... Resetting...")
         if warn_fn is not None:
@@ -202,3 +227,4 @@ def load(print_dict, img_dict, json_path, print_fn, warn_fn=None):
 
     init_dict(print_dict, img_dict, warn_fn)
     init_images(print_dict, img_dict, print_fn)
+    return loaded_successfully

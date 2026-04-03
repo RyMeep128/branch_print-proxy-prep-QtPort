@@ -283,6 +283,19 @@ def image_file_dialog(parent, folder):
     return os.path.basename(choice) if choice is not None else None
 
 
+def load_project_file(application, print_dict, img_dict, json_path, print_fn):
+    loaded_successfully = project.load(
+        print_dict,
+        img_dict,
+        json_path,
+        print_fn,
+        application.warn_nonfatal,
+    )
+    if loaded_successfully:
+        application.set_json_path(json_path)
+    return loaded_successfully
+
+
 class DeckImportDialog(QDialog):
     def __init__(self, parent, image_dir):
         super().__init__(parent)
@@ -1979,15 +1992,16 @@ class ActionsWidget(QGroupBox):
                 self, FileDialogType.Open, application.json_path()
             )
             if new_project_json is not None and os.path.exists(new_project_json):
-                application.set_json_path(new_project_json)
+                load_succeeded = False
 
                 def load_project():
-                    project.load(
+                    nonlocal load_succeeded
+                    load_succeeded = load_project_file(
+                        application,
                         print_dict,
                         img_dict,
                         new_project_json,
                         make_popup_print_fn(reload_window),
-                        application.warn_nonfatal,
                     )
 
                 self.window().setEnabled(False)

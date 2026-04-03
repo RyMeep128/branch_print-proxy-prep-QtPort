@@ -4,6 +4,12 @@ import json
 import high_res
 
 
+VALID_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+)
+VALID_PNG_BYTES = base64.b64decode(VALID_PNG_BASE64)
+
+
 def test_build_card_context_prefers_import_metadata():
     print_dict = {
         "card_metadata": {
@@ -21,6 +27,58 @@ def test_build_card_context_prefers_import_metadata():
     assert context.display_name == "Opt"
     assert context.set_code == "eld"
     assert context.collector_number == "59"
+
+
+def test_build_card_context_falls_back_to_scryfall_filename_parts():
+    context = high_res.build_card_context(
+        "scryfall_mom_137_etali-primal-conqueror.png",
+        {},
+    )
+
+    assert context.query == "Etali Primal Conqueror"
+    assert context.display_name == "Etali Primal Conqueror"
+    assert context.set_code == "mom"
+    assert context.collector_number == "137"
+
+
+def test_build_card_context_uses_normalized_override_name_when_metadata_missing():
+    print_dict = {
+        "high_res_front_overrides": {
+            "scryfall_lci_88_aclazotz-deepest-betrayal.png": {
+                "name": "Aclazotz, Deepest Betrayal (Normal) [LCI] {88} (1)"
+            }
+        }
+    }
+
+    context = high_res.build_card_context(
+        "scryfall_lci_88_aclazotz-deepest-betrayal.png",
+        print_dict,
+    )
+
+    assert context.query == "Aclazotz, Deepest Betrayal"
+    assert context.set_code == "lci"
+    assert context.collector_number == "88"
+
+
+def test_build_card_context_uses_front_face_when_metadata_name_is_double_faced():
+    print_dict = {
+        "card_metadata": {
+            "scryfall_dka_81_afflicted-deserter.png": {
+                "name": "Afflicted Deserter // Werewolf Ransacker",
+                "set_code": "dka",
+                "collector_number": "81",
+            }
+        }
+    }
+
+    context = high_res.build_card_context(
+        "scryfall_dka_81_afflicted-deserter.png",
+        print_dict,
+    )
+
+    assert context.query == "Afflicted Deserter"
+    assert context.set_code == "dka"
+    assert context.collector_number == "81"
 
 
 def test_build_search_payload_uses_dpi_filters_and_sources():
@@ -314,7 +372,7 @@ def test_apply_high_res_candidate_writes_bytes_and_tracks_override(tmp_path):
         source_id=7,
         source_name="Test Source",
     )
-    expected = b"image-bytes"
+    expected = VALID_PNG_BYTES
     print_dict = {"high_res_front_overrides": {}}
 
     high_res.apply_high_res_candidate(
@@ -342,7 +400,7 @@ def test_apply_high_res_candidate_writes_bytes_and_tracks_override(tmp_path):
 
 
 def test_download_high_res_image_falls_back_to_drive_identifier():
-    expected = b"image-bytes"
+    expected = VALID_PNG_BYTES
 
     result = high_res.download_high_res_image(
         "drive123",
@@ -352,6 +410,31 @@ def test_download_high_res_image_falls_back_to_drive_identifier():
     )
 
     assert result == expected
+
+
+def test_download_high_res_image_falls_back_when_direct_payload_is_not_an_image():
+    result = high_res.download_high_res_image(
+        "drive123",
+        "https://download/opt.png",
+        fetch_bytes=lambda _url: b"<html>not an image</html>",
+        fetch_text=lambda _url: VALID_PNG_BASE64,
+    )
+
+    assert result == VALID_PNG_BYTES
+
+
+def test_download_high_res_image_raises_when_all_sources_are_invalid():
+    try:
+        high_res.download_high_res_image(
+            "drive123",
+            "https://download/opt.png",
+            fetch_bytes=lambda _url: b"",
+            fetch_text=lambda _url: "not-base64-image-data",
+        )
+    except ValueError as exc:
+        assert "could not be downloaded as a valid image file" in str(exc)
+    else:
+        raise AssertionError("Expected download_high_res_image to fail")
 
 
 def test_get_double_faced_back_context_uses_scryfall_faces():
@@ -464,7 +547,7 @@ def test_apply_high_res_candidate_invalidates_cached_outputs(tmp_path):
         str(image_dir),
         card_name,
         candidate,
-        fetch_bytes=lambda _url: b"image-bytes",
+        fetch_bytes=lambda _url: VALID_PNG_BYTES,
     )
 
     assert not (crop_dir / card_name).exists()
@@ -511,13 +594,107 @@ def test_apply_high_res_candidate_replaces_matching_backside(tmp_path):
             filename=back_name,
             candidate=backside_candidate,
         ),
-        fetch_bytes=lambda url: seen_urls.append(url) or f"bytes:{url}".encode("utf-8"),
+        fetch_bytes=lambda url: seen_urls.append(url) or VALID_PNG_BYTES,
     )
 
-    assert (image_dir / front_name).read_bytes() == b"bytes:https://download/front.png"
-    assert (image_dir / back_name).read_bytes() == b"bytes:https://download/back.png"
+    assert (image_dir / front_name).read_bytes() == VALID_PNG_BYTES
+    assert (image_dir / back_name).read_bytes() == VALID_PNG_BYTES
     assert seen_urls == [
         "https://download/front.png",
         "https://download/back.png",
     ]
     assert print_dict["high_res_front_overrides"][front_name]["back_identifier"] == "back123"
+
+
+def test_apply_high_res_candidate_does_not_overwrite_front_when_download_is_invalid(tmp_path):
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    card_name = "scryfall_eld_59_opt.png"
+    original_bytes = b"original-front"
+    (image_dir / card_name).write_bytes(original_bytes)
+    candidate = high_res.HighResCandidate(
+        identifier="drive123",
+        name="Opt",
+        dpi=1200,
+        extension="png",
+        download_link="https://download/opt.png",
+        small_thumbnail_url="https://thumb/small",
+        medium_thumbnail_url="https://thumb/medium",
+        source_id=7,
+        source_name="Test Source",
+    )
+
+    try:
+        high_res.apply_high_res_candidate(
+            {"high_res_front_overrides": {}},
+            str(image_dir),
+            card_name,
+            candidate,
+            fetch_bytes=lambda _url: b"<html>bad payload</html>",
+            fetch_text=lambda _url: "not-base64-image-data",
+        )
+    except ValueError as exc:
+        assert "valid image file" in str(exc)
+    else:
+        raise AssertionError("Expected apply_high_res_candidate to fail")
+
+    assert (image_dir / card_name).read_bytes() == original_bytes
+
+
+def test_apply_high_res_candidate_does_not_overwrite_either_side_if_back_download_is_invalid(tmp_path):
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    front_name = "scryfall_mid_1_delver-of-secrets.png"
+    back_name = "__scryfall_mid_1_insectile-aberration.png"
+    original_front = b"original-front"
+    original_back = b"original-back"
+    (image_dir / front_name).write_bytes(original_front)
+    (image_dir / back_name).write_bytes(original_back)
+    candidate = high_res.HighResCandidate(
+        identifier="front123",
+        name="Delver of Secrets",
+        dpi=800,
+        extension="png",
+        download_link="https://download/front.png",
+        small_thumbnail_url="https://thumb/front-small",
+        medium_thumbnail_url="https://thumb/front-medium",
+        source_id=3,
+        source_name="Chilli_Axe",
+    )
+    backside_candidate = high_res.HighResCandidate(
+        identifier="back123",
+        name="Insectile Aberration",
+        dpi=800,
+        extension="png",
+        download_link="https://download/back.png",
+        small_thumbnail_url="https://thumb/back-small",
+        medium_thumbnail_url="https://thumb/back-medium",
+        source_id=3,
+        source_name="Chilli_Axe",
+    )
+
+    def fake_fetch_bytes(url):
+        if url.endswith("/front.png"):
+            return VALID_PNG_BYTES
+        return b"<html>bad back</html>"
+
+    try:
+        high_res.apply_high_res_candidate(
+            {"high_res_front_overrides": {}},
+            str(image_dir),
+            front_name,
+            candidate,
+            backside_match=high_res.BacksideMatch(
+                filename=back_name,
+                candidate=backside_candidate,
+            ),
+            fetch_bytes=fake_fetch_bytes,
+            fetch_text=lambda _url: "not-base64-image-data",
+        )
+    except ValueError as exc:
+        assert "valid image file" in str(exc)
+    else:
+        raise AssertionError("Expected double-faced apply to fail")
+
+    assert (image_dir / front_name).read_bytes() == original_front
+    assert (image_dir / back_name).read_bytes() == original_back

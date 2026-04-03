@@ -79,8 +79,13 @@ def rotate_image(img, rotation):
 def read_image(path):
     with open(path, "rb") as f:
         bytes = bytearray(f.read())
+        if len(bytes) == 0:
+            return None
         numpyarray = numpy.asarray(bytes, dtype=numpy.uint8)
-        image = cv2.imdecode(numpyarray, cv2.IMREAD_UNCHANGED)
+        try:
+            image = cv2.imdecode(numpyarray, cv2.IMREAD_UNCHANGED)
+        except cv2.error:
+            return None
         return image
 
 
@@ -88,6 +93,15 @@ def write_image(path, image):
     with open(path, "wb") as f:
         _, bytes = cv2.imencode(".png", image)
         bytes.tofile(f)
+
+
+def is_decoded_image_valid(image):
+    if image is None:
+        return False
+    size = getattr(image, "size", None)
+    if size is None:
+        return True
+    return size > 0
 
 
 def need_run_cropper(image_dir, crop_dir, bleed_edge, do_vibrance_bump):
@@ -209,6 +223,12 @@ def cropper(
             continue
 
         image = read_image(os.path.join(image_dir, img_file))
+        if not is_decoded_image_valid(image):
+            print_fn(
+                f"Skipping invalid image file {img_file}...\n"
+                "The file could not be decoded as an image."
+            )
+            continue
         if is_pre_cropped_image_name(img_file):
             print_fn(f"Skipping crop for pre-cropped image {img_file}...\n")
             cropped_image = image
@@ -230,6 +250,12 @@ def cropper(
     if uncrop and not has_bleed_edge:
         for extra_img in extra_files:
             image = read_image(os.path.join(output_dir, extra_img))
+            if not is_decoded_image_valid(image):
+                print_fn(
+                    f"Skipping invalid cropped image file {extra_img}...\n"
+                    "The file could not be decoded as an image."
+                )
+                continue
             uncropped_image = uncrop_image(image, extra_img, print_fn)
             write_image(os.path.join(image_dir, extra_img), uncropped_image)
     else:
@@ -328,6 +354,14 @@ def cache_previews(file, image_dir, crop_dir, print_fn, data):
 
         if need_img:
             img = read_image(os.path.join(crop_dir, f))
+            if not is_decoded_image_valid(img):
+                print_fn(
+                    f"Skipping invalid cropped preview source {f}...\n"
+                    "The file could not be decoded as an image."
+                )
+                if f in data:
+                    del data[f]
+                continue
             (h, w, _) = img.shape
             scale = 248 / w
             preview_size = (round(w * scale), round(h * scale))
@@ -361,6 +395,12 @@ def cache_previews(file, image_dir, crop_dir, print_fn, data):
             source_img = None
             if not has_uncropped:
                 source_img = read_image(os.path.join(image_dir, f))
+                if not is_decoded_image_valid(source_img):
+                    print_fn(
+                        f"Skipping invalid source preview image {f}...\n"
+                        "The file could not be decoded as an image."
+                    )
+                    continue
                 (h, w, _) = source_img.shape
                 scale = 186 / w
                 uncropped_size = (round(w * scale), round(h * scale))
@@ -375,6 +415,12 @@ def cache_previews(file, image_dir, crop_dir, print_fn, data):
             if not has_effective_dpi:
                 if source_img is None:
                     source_img = read_image(os.path.join(image_dir, f))
+                    if not is_decoded_image_valid(source_img):
+                        print_fn(
+                            f"Skipping invalid source DPI image {f}...\n"
+                            "The file could not be decoded as an image."
+                        )
+                        continue
                     (h, w, _) = source_img.shape
                 img_dict["effective_dpi"] = effective_dpi_from_dimensions(w, h, f)
 

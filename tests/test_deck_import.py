@@ -204,6 +204,24 @@ def test_parse_archidekt_html_extracts_entries_and_aggregates_duplicates():
     ]
 
 
+def test_parse_archidekt_html_accepts_extra_script_attributes():
+    html = """
+<html><body>
+<script nonce="abc123" type="application/json" id="__NEXT_DATA__" crossorigin="anonymous">
+{"props":{"pageProps":{"redux":{"deck":{"cardMap":{
+  "a":{"name":"Lightning Bolt","qty":1,"setCode":"clu","collectorNumber":"141"}
+}}}}}}
+</script>
+</body></html>
+"""
+
+    entries = deck_import.parse_archidekt_html(html)
+
+    assert entries == [
+        deck_import.DeckEntry(count=1, name="Lightning Bolt", set_code="clu", collector_number="141"),
+    ]
+
+
 def test_parse_archidekt_html_rejects_missing_deck_data():
     try:
         deck_import.parse_archidekt_html("<html><body>No deck here</body></html>")

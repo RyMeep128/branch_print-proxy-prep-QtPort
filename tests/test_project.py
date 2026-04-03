@@ -88,6 +88,40 @@ def test_init_dict_keeps_cards_with_source_files_even_if_crop_is_missing(monkeyp
     }
 
 
+def test_init_dict_backfills_scryfall_metadata_from_filename(monkeypatch, tmp_path):
+    image_dir = tmp_path / "images"
+    crop_dir = image_dir / "crop"
+
+    def fake_list_image_files(folder):
+        if folder == str(crop_dir):
+            return ["scryfall_mom_137_etali-primal-conqueror.png"]
+        if folder == str(image_dir):
+            return ["scryfall_mom_137_etali-primal-conqueror.png"]
+        return []
+
+    monkeypatch.setattr(project.image, "init_image_folder", lambda *_args: None)
+    monkeypatch.setattr(project.image, "list_image_files", fake_list_image_files)
+
+    print_dict = {
+        "image_dir": str(image_dir),
+        "img_cache": str(tmp_path / "img.cache"),
+        "cards": {"scryfall_mom_137_etali-primal-conqueror.png": 1},
+        "card_metadata": {},
+        "bleed_edge": "0",
+    }
+    img_dict = {}
+
+    project.init_dict(print_dict, img_dict)
+
+    assert print_dict["card_metadata"] == {
+        "scryfall_mom_137_etali-primal-conqueror.png": {
+            "name": "Etali Primal Conqueror",
+            "set_code": "mom",
+            "collector_number": "137",
+        }
+    }
+
+
 def test_load_resets_invalid_project_file_and_initializes_images(
     monkeypatch, tmp_path
 ):
@@ -114,14 +148,72 @@ def test_load_resets_invalid_project_file_and_initializes_images(
     )
     monkeypatch.setattr(project.time, "sleep", lambda _: None)
 
-    project.load(print_dict, img_dict, str(project_file), printed.append)
+    loaded_successfully = project.load(
+        print_dict, img_dict, str(project_file), printed.append
+    )
 
+    assert loaded_successfully is False
     assert print_dict == {}
     assert len(init_dict_calls) == 1
     assert len(init_images_calls) == 1
     assert init_dict_calls[0][2] is None
     assert printed
     assert printed[0].startswith("Error: Failed loading project")
+
+
+def test_load_valid_project_replaces_existing_state(monkeypatch, tmp_path):
+    project_file = tmp_path / "print.json"
+    project_file.write_text(
+        json.dumps(
+            {
+                "image_dir": "images",
+                "img_cache": "img.cache",
+                "cards": {"new-card.png": 2},
+                "backsides": {},
+                "backside_short_edge": {},
+                "oversized": {},
+                "card_metadata": {"new-card.png": {"name": "New Card"}},
+                "high_res_front_overrides": {},
+                "bleed_edge": "0",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    init_dict_calls = []
+    init_images_calls = []
+    print_dict = {
+        "cards": {"stale-card.png": 5},
+        "backsides": {"stale-card.png": "__back.png"},
+        "backside_short_edge": {"stale-card.png": True},
+        "oversized": {"stale-card.png": True},
+        "card_metadata": {"stale-card.png": {"name": "Stale"}},
+        "high_res_front_overrides": {"stale-card.png": {"identifier": "old"}},
+        "extra_runtime_only": "stale",
+    }
+    img_dict = {}
+
+    monkeypatch.setattr(
+        project,
+        "init_dict",
+        lambda pd, id_, warn_fn=None: init_dict_calls.append(dict(pd)),
+    )
+    monkeypatch.setattr(
+        project,
+        "init_images",
+        lambda pd, id_, fn: init_images_calls.append(dict(pd)),
+    )
+
+    loaded_successfully = project.load(
+        print_dict, img_dict, str(project_file), lambda _msg: None
+    )
+
+    assert loaded_successfully is True
+    assert "extra_runtime_only" not in print_dict
+    assert print_dict["cards"] == {"new-card.png": 2}
+    assert print_dict["card_metadata"] == {"new-card.png": {"name": "New Card"}}
+    assert len(init_dict_calls) == 1
+    assert len(init_images_calls) == 1
 
 
 def test_clear_old_cards_removes_card_images_but_preserves_default_back(tmp_path):
