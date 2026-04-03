@@ -1,5 +1,6 @@
 import json
 
+from models import CardMetadata
 import project
 
 
@@ -293,6 +294,12 @@ def test_load_valid_project_replaces_existing_state(monkeypatch, tmp_path):
     assert print_dict["card_metadata"] == {"new-card.png": {"name": "New Card"}}
     assert len(init_dict_calls) == 1
     assert len(init_images_calls) == 1
+
+
+def test_card_metadata_to_dict_omits_none_fields():
+    metadata = CardMetadata.from_dict({"name": "New Card"})
+
+    assert metadata.to_dict() == {"name": "New Card"}
 
 
 def test_clear_old_cards_removes_card_images_but_preserves_default_back(tmp_path):

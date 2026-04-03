@@ -57,6 +57,7 @@ from dialogs import (
     DeckImportDialog,
     FileDialogType,
     HighResPickerDialog,
+    LineEditWithLabel,
     SettingsDialog,
     WidgetWithLabel,
     delete_project_with_confirmation,

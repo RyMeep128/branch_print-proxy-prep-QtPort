@@ -82,6 +82,7 @@ from dialogs import (
     show_exception_dialog,
 )
 from editor_widgets import (
+    CardGrid,
     CardScrollArea,
     CardTabs,
     EditorPage,

@@ -72,22 +72,31 @@ class CardMetadata:
     set_code: str | None = None
     collector_number: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
+    _include_name: bool = False
+    _include_set_code: bool = False
+    _include_collector_number: bool = False
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> "CardMetadata":
-        data = dict(data or {})
+        raw_data = dict(data or {})
         return cls(
-            name=_optional_str(data.pop("name", None)),
-            set_code=_optional_str(data.pop("set_code", None)),
-            collector_number=_optional_str(data.pop("collector_number", None)),
-            extras=data,
+            name=_optional_str(raw_data.pop("name", None)),
+            set_code=_optional_str(raw_data.pop("set_code", None)),
+            collector_number=_optional_str(raw_data.pop("collector_number", None)),
+            extras=raw_data,
+            _include_name="name" in (data or {}),
+            _include_set_code="set_code" in (data or {}),
+            _include_collector_number="collector_number" in (data or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
         result = dict(self.extras)
-        result["name"] = self.name
-        result["set_code"] = self.set_code
-        result["collector_number"] = self.collector_number
+        if self._include_name or self.name is not None:
+            result["name"] = self.name
+        if self._include_set_code or self.set_code is not None:
+            result["set_code"] = self.set_code
+        if self._include_collector_number or self.collector_number is not None:
+            result["collector_number"] = self.collector_number
         return result
 
 
