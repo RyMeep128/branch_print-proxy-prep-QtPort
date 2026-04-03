@@ -19,9 +19,26 @@ valid_image_extensions = [
     ".png",
 ]
 
+pre_cropped_prefixes = [
+    "scryfall_",
+]
+
 
 def list_image_files(dir):
     return list_files(dir, valid_image_extensions)
+
+
+def is_pre_cropped_image_name(image_name):
+    lowered = image_name.lower()
+    return any(lowered.startswith(prefix) for prefix in pre_cropped_prefixes)
+
+
+def effective_dpi_from_dimensions(width, height, image_name):
+    if is_pre_cropped_image_name(image_name):
+        base_width, base_height = card_size_without_bleed_inch
+    else:
+        base_width, base_height = card_size_with_bleed_inch
+    return min(width / base_width, height / base_height)
 
 
 def init():
@@ -192,7 +209,11 @@ def cropper(
             continue
 
         image = read_image(os.path.join(image_dir, img_file))
-        cropped_image = crop_image(image, img_file, bleed_edge, max_dpi, print_fn)
+        if is_pre_cropped_image_name(img_file):
+            print_fn(f"Skipping crop for pre-cropped image {img_file}...\n")
+            cropped_image = image
+        else:
+            cropped_image = crop_image(image, img_file, bleed_edge, max_dpi, print_fn)
         if do_vibrance_bump:
             cropped_image = numpy.array(
                 Image.fromarray(cropped_image).filter(vibrance_cube)
@@ -279,6 +300,7 @@ def need_cache_previews(crop_dir, img_dict):
             "size" not in value
             or "thumb" not in value
             or "uncropped" not in value
+            or "effective_dpi" not in value
             or img not in crop_list
         ):
             return True
@@ -334,21 +356,27 @@ def cache_previews(file, image_dir, crop_dir, print_fn, data):
     for f in list_files(image_dir, valid_image_extensions):
         if f in data:
             img_dict = data[f]
-            has_img = "uncropped" in img_dict
-            if not has_img:
-                img = read_image(os.path.join(image_dir, f))
-                (h, w, _) = img.shape
+            has_uncropped = "uncropped" in img_dict
+            has_effective_dpi = "effective_dpi" in img_dict
+            source_img = None
+            if not has_uncropped:
+                source_img = read_image(os.path.join(image_dir, f))
+                (h, w, _) = source_img.shape
                 scale = 186 / w
                 uncropped_size = (round(w * scale), round(h * scale))
 
-                if not has_img or not has_size:
-                    print_fn(f"Caching uncropped preview for image {f}...\n")
+                print_fn(f"Caching uncropped preview for image {f}...\n")
 
-                    image_data, image_size = to_bytes(img, uncropped_size)
-                    img_dict["uncropped"] = {
-                        "data": str(image_data),
-                        "size": image_size,
-                    }
+                image_data, image_size = to_bytes(source_img, uncropped_size)
+                img_dict["uncropped"] = {
+                    "data": str(image_data),
+                    "size": image_size,
+                }
+            if not has_effective_dpi:
+                if source_img is None:
+                    source_img = read_image(os.path.join(image_dir, f))
+                    (h, w, _) = source_img.shape
+                img_dict["effective_dpi"] = effective_dpi_from_dimensions(w, h, f)
 
     with open(file, "w") as fp:
         json.dump(data, fp, ensure_ascii=False)

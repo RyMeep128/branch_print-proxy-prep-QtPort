@@ -263,7 +263,7 @@ def decklist_file_dialog(parent, root):
         parent,
         "Open Decklist",
         root,
-        "Deck Files (*.txt *.dek *.mtga *.dck);;All Files (*)",
+        "Deck Files (*.txt *.csv *.dek *.mtga *.dck);;All Files (*)",
         FileDialogType.Open,
     )
 
@@ -287,14 +287,18 @@ class DeckImportDialog(QDialog):
         self.resize(560, 420)
 
         instructions = QLabel(
-            "Paste a decklist or load one from a file. Supported format is lines like `4 Lightning Bolt`."
+            "Paste a decklist or load one from a file. Supported formats include lines like `4 Lightning Bolt` and CSV exports with count/name/set_code/collector_number columns."
         )
         instructions.setWordWrap(True)
 
         self._text_edit = QTextEdit()
         self._text_edit.setAcceptRichText(False)
         self._text_edit.setPlaceholderText(
-            "4 Lightning Bolt\n2 Counterspell\n1 Opt (ELD) 59"
+            "4 Lightning Bolt\n2 Counterspell\n1 Opt (ELD) 59\n\nor CSV with headers like:\ncount,name,set_code,collector_number"
+        )
+        self._archidekt_url = QLineEdit()
+        self._archidekt_url.setPlaceholderText(
+            "https://archidekt.com/decks/123456/example-deck"
         )
 
         load_file_button = QPushButton("Load From File")
@@ -309,6 +313,7 @@ class DeckImportDialog(QDialog):
 
         layout = QVBoxLayout()
         layout.addWidget(instructions)
+        layout.addWidget(WidgetWithLabel("Archidekt &URL", self._archidekt_url))
         layout.addWidget(self._text_edit)
         layout.addLayout(button_row)
         self.setLayout(layout)
@@ -331,8 +336,17 @@ class DeckImportDialog(QDialog):
                 )
 
         def import_deck():
-            if len(self.deck_text().strip()) == 0:
-                QToolTip.showText(QCursor.pos(), "Paste or load a decklist first")
+            if len(self.archidekt_url().strip()) > 0 and not deck_import.is_archidekt_url(
+                self.archidekt_url()
+            ):
+                QToolTip.showText(
+                    QCursor.pos(), "Enter a valid public Archidekt deck URL"
+                )
+                return
+            if len(self.archidekt_url().strip()) == 0 and len(self.deck_text().strip()) == 0:
+                QToolTip.showText(
+                    QCursor.pos(), "Paste/load a decklist or enter an Archidekt URL"
+                )
                 return
             self.accept()
 
@@ -342,6 +356,9 @@ class DeckImportDialog(QDialog):
 
     def deck_text(self):
         return self._text_edit.toPlainText()
+
+    def archidekt_url(self):
+        return self._archidekt_url.text().strip()
 
 
 class WidgetWithLabel(QWidget):
@@ -661,6 +678,29 @@ class CardWidget(QWidget):
         number_area.setLayout(number_layout)
         number_area.setFixedHeight(20)
 
+        effective_dpi = None
+        if card_name in img_dict:
+            effective_dpi = img_dict[card_name].get("effective_dpi")
+
+        low_dpi_warning = (
+            effective_dpi is not None
+            and effective_dpi < low_dpi_warning_threshold
+        )
+        if low_dpi_warning:
+            low_dpi_label = QLabel("Low DPI")
+            low_dpi_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            low_dpi_label.setToolTip(
+                f"This image is approximately {round(effective_dpi)} DPI, below the warning threshold of {low_dpi_warning_threshold} DPI."
+            )
+            low_dpi_label.setStyleSheet(
+                "background-color: #7a1f1f; color: white; font-weight: bold; "
+                "border: 1px solid #b85555; border-radius: 4px; padding: 2px 6px;"
+            )
+            low_dpi_label.setFixedHeight(22)
+            self._low_dpi_label = low_dpi_label
+        else:
+            self._low_dpi_label = None
+
         if backside_img is not None:
             card_widget = StackedCardBacksideView(img, backside_img)
 
@@ -743,6 +783,8 @@ class CardWidget(QWidget):
 
         layout = QVBoxLayout()
         layout.addWidget(card_widget)
+        if self._low_dpi_label is not None:
+            layout.addWidget(self._low_dpi_label)
         layout.addWidget(number_area)
         if self._extra_options_area is not None:
             layout.addWidget(extra_options_area)
@@ -778,6 +820,9 @@ class CardWidget(QWidget):
         img_height = self._img_widget.heightForWidth(img_width)
 
         additional_widgets = self._number_area.height() + spacing
+
+        if self._low_dpi_label is not None:
+            additional_widgets += self._low_dpi_label.height() + spacing
 
         if self._extra_options_area:
             additional_widgets += self._extra_options_area.height() + spacing
@@ -1495,15 +1540,28 @@ class ActionsWidget(QGroupBox):
                 return
 
             deck_text = dialog.deck_text()
+            archidekt_url = dialog.archidekt_url()
             import_result = None
+            import_error = None
 
             def import_work():
-                nonlocal import_result
-                import_result = deck_import.import_decklist(
-                    deck_text,
-                    print_dict["image_dir"],
-                    make_popup_print_fn(import_window),
-                )
+                nonlocal import_result, import_error
+                try:
+                    if archidekt_url:
+                        import_result = deck_import.import_archidekt_url(
+                            archidekt_url,
+                            print_dict["image_dir"],
+                            make_popup_print_fn(import_window),
+                        )
+                    else:
+                        import_result = deck_import.import_decklist(
+                            deck_text,
+                            print_dict["image_dir"],
+                            make_popup_print_fn(import_window),
+                        )
+                except Exception as exc:
+                    import_error = exc
+                    return
                 if import_result.imported:
                     make_popup_print_fn(import_window)("Refreshing project...")
                     project.refresh_after_image_changes(
@@ -1523,6 +1581,13 @@ class ActionsWidget(QGroupBox):
             import_window.show_during_work(import_work)
             del import_window
             self.window().setEnabled(True)
+
+            if import_error is not None:
+                application.warn_nonfatal(
+                    "Decklist Import Failed",
+                    str(import_error),
+                )
+                return
 
             if import_result is None:
                 return
