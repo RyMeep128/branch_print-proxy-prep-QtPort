@@ -1,84 +1,198 @@
 # print-proxy-prep
-Crop bleed edges from proxy images and make PDFs for at-home printing.
+Prepare proxy card images for home printing with a desktop Qt app.
+
+The app can:
+- crop bleed edges and build print-ready PDFs
+- import card images from Scryfall using pasted decklists, deck files, or public Archidekt URLs
+- handle double-faced cards and per-card backsides
+- search MPCFill for higher-DPI replacements
+- cache previews and high-res search results so repeat work is much faster
 
 ![_printme pdf - Adobe Acrobat Reader (64-bit) 2024-09-26 09_49_43](https://github.com/user-attachments/assets/01c0f25e-61a9-4189-8b00-0dfedac6e73d)
 
 # Installation
 
-## Tl;Dr
-- Install latest Python, make sure to add to `PATH`
-- Clone the repo
+## Quick Start
+- Install the latest Python and make sure `python` is on `PATH`
+- Clone or unzip this repo
 - Run `Setup Print Proxy Prep.cmd`
 - Run `Launch Print Proxy Prep.cmd`
-- Optional: run `Create Desktop Shortcut.ps1` once to add a desktop shortcut
+- Optional: run `Create Desktop Shortcut.ps1` once
 
-## Easier Windows App Build
+## Build a Windows App Bundle
 If you want to hand this to someone without requiring Python on their machine, run `Build EXE.cmd`.
 
-That will create a self-contained Windows app bundle in:
+That produces:
 - `dist\Print Proxy Prep\Print Proxy Prep.exe`
 
-This is the easiest option for non-technical users because Python does not need to be installed on the target machine.
+## Manual Notes
+`Setup Print Proxy Prep.cmd` creates `images`, `images\crop`, a local `venv`, upgrades `pip`, and installs the dependencies from `requirements.txt`.
 
-## Detailed
-You're gonna need <a href="https://www.python.org/downloads/">Python</a>, I'd say whatever the latest version is, should work.
-When installing, make sure to add Python to `PATH`. ![image](https://user-images.githubusercontent.com/103437609/203196002-f04b0c0d-cb2e-4154-ba90-f2f9578ced95.png)
+After setup you can either:
+- run `venv\Scripts\python main.py`
+- or double-click `Launch Print Proxy Prep.cmd`
 
-With Python installed, go ahead and download the zip and unzip it wherever you like.
-![image](https://user-images.githubusercontent.com/103437609/203219985-019cea6e-2a85-4ea8-ba90-b96e7665eae7.png)
+The launcher will run setup first if `venv` does not exist yet.
 
-There is a setup script to help with installation if you're not savvy with Python. Run `Setup Print Proxy Prep.cmd` and it will make a folder called `images`, one called `images\crop`, create a `venv`, upgrade `pip`, and install the dependencies from `requirements.txt` into that virtual environment.
+# Running the App
 
-Then, you can run main.py from the command line like `venv\scripts\python main.py`, or double-click `Launch Print Proxy Prep.cmd` to open the GUI. The launcher will automatically run setup first if `venv` does not exist yet.
+You can start from either direction:
+- drop existing card images into `images`
+- or use `Import Decklist` to download them from Scryfall
 
-If you want it to feel more like a normal app, run `Create Desktop Shortcut.ps1` once and it will place a `Print Proxy Prep` shortcut on your desktop.
-If you have already built the PyInstaller app, the shortcut script will point to the `.exe` automatically.
+Images whose filenames start with `__` are treated as helper assets and are hidden from the main card list.
 
-# Running the Program
-![image](https://github.com/user-attachments/assets/51618b13-b226-47aa-81ba-b1b59c8248db)
+## Main Areas
 
-First, throw some images with bleed edge in the `images` folder. Note that images starting with `__` will not be visible in the program. Then, when you opem main.py or hit the `Run Cropper` button from the GUI, it will go through all the images and crop them.
+### Card Grid
+The left side of the window shows the current cards in a grid.
 
-## Card Grid
-The left half of the window contains a grid of all cards you placed in the `images` folder. Below each image is an text input field and a +/-, use these to adjust how many copies for each card you want. On the top you have global controls to +/- all cards or reset them back to 1.
+Each card tile includes:
+- the card image
+- copy count controls
+- a DPI badge showing the current effective DPI
+- a warning-style badge when the DPI is below the low-DPI threshold
+- optional backside and oversized controls when those features are enabled
 
-## Print Preview
-![image](https://github.com/user-attachments/assets/f241be6c-6d51-4b3c-94f3-45dde1c89d41)
-On the top-left you can switch over to the `Preview`, which shows you a preview of the printed page. It should update automatically when you change printing settings on the right.
+Global controls at the top of the grid let you increment, decrement, or reset all visible card counts.
 
-## Options
-The right panel contains all the options for printing. Most are self-explanatory, but the ones that are not will be outlined here.
+### Preview Tab
+The `Preview` tab renders the current document layout so you can sanity-check pagination, bleed, guides, and backsides before exporting.
+
+### Actions Panel
+The right-side `Actions` box includes:
+- `Run Cropper`
+- `Render Document`
+- `Save Project`
+- `Load Project`
+- `Set Image Folder`
+- `Open Images`
+- `Settings`
+- `Import Decklist`
+- `Clear Old Cards`
+
+# Importing Cards
+
+## Import Decklist
+`Import Decklist` can import from:
+- pasted deck text like `4 Lightning Bolt`
+- deck files such as `.txt`, `.csv`, `.dek`, `.mtga`, and `.dck`
+- CSV rows with `count`, `name`, `set_code`, and `collector_number`
+- public Archidekt deck URLs
+
+The importer resolves cards through Scryfall and downloads image files into your image folder.
+
+If a deck contains double-faced cards, the importer also pulls the matching back face and automatically enables per-card backsides for those imports.
+
+If some lines cannot be parsed or some cards cannot be resolved, the app shows a summary instead of silently failing.
+
+## Existing Images
+If you already have card art, place it in `images` and run the cropper.
+
+If a file is already pre-cropped, enable `Allow Precropped` in `Settings` and place the file in `images\crop`. The app will treat it as already cropped and keep the rest of the workflow working.
+
+# Printing Options
+
+## Print Options
+The print section controls:
+- output PDF filename
+- paper size
+- portrait vs landscape
+- extended guides
 
 ### Extended Guides
-Extends the guides for the cards on the edges of the layout to the very edge of the page, will require a tiny bit more ink to print but makes cutting much easier.
+This extends cut guides all the way to the page edge. It uses a little more ink but makes trimming easier.
+
+## Card Options
+The card section controls:
+- bleed edge
+- backside support
+- default backside image
+- backside print offset
+- oversized-card support
 
 ### Bleed Edge
-Instead of printing cards perfectly cropped to card size will leave a small amount of bleed edge. This emulates the real printing process and thus makes it easier to cut without having adjacent cards visible on slight miscuts at the cost of more ink usage.
+Adds a little extra border around each card so slight cutting errors are less visible.
 
-### Enable Backside
-![image](https://github.com/user-attachments/assets/f370a7cb-021f-4980-adcb-3d6aba099650)
+### Backsides
+When `Enable Backside` is on, the app generates alternating front and back pages for duplex-style printing.
 
-Adds a backside to each image, which means when printing each other page will automatically be filled with the corresponding backsides for each image. This allows for double-sided cards, different card backs, etc.
+You can:
+- set a global default backside with the `Default` button
+- click the mini backside on a card tile to choose a custom backside for that card
+- reset a card back to the default
+- mark a card as `Sideways` for short-edge flipping
 
-The default backside is `__back.png`, if that file is not available a question mark will be shown instead. To change the default just click on the `Default` button and browse to the image you want.
+`__back.png` is the default expected card back. If it is missing, the UI falls back to a placeholder image.
 
-To change the backside for an individual card, click on the backside for that card in the card grid and brows to the image you want.
+### Backside Offset
+Use `Offset` if your printer lines up front and back pages with a small horizontal drift.
 
-In some cases one can't use Duplex Printing, either because the printer doesn't support it or the print medium is too thick. In those cases you'll have to manually turn the page between front- and backside prints. For many printers this will result in a slight offset between the two sides that is more or less consistent. Do a test print to measure this difference and insert it into the `Offset` field.
+### Oversized
+Turn on `Enable Oversized Option` if some cards need oversized handling, then mark those cards individually in the grid.
 
-### Allow Precropped
-In some cases you may find yourself having card images that don't have a bleed edge. In those cases, enable this option and place your images into the `images/cropped` folder. The program will automatically add a black bleed edge so that all features of the program work as intended.
+# High-Res Replacements
 
-### Vibrance Bump
-When printing onto holographic paper/sticker/cardstock enable this setting to get a more vibrant looking result.
+Click any card image in the grid to open the high-res picker.
 
-## Render Document
+The high-res flow can:
+- search MPCFill-compatible backends for alternate front art
+- filter by minimum and maximum DPI
+- page through large result sets 60 at a time
+- preview thumbnails before applying
+- download and apply a selected replacement
+- remember the currently selected high-res source for each card
 
-When you're done getting your print setup, hit this button in the top right and it will make your PDF and open it up for you. Hopefully you can handle yourself from there.
+For imported double-faced cards, applying a matching high-res front can also try to find and apply the matching high-res back from the same source.
 
-# SOME NOTES:
-- If you need support for a new feature, please open an Issue.
-- The program will automatically save if you close the window. It will not save if it crashes! The data is stored in print.json.
-- image.cache if a file that is made that stores the data for the thumbnails.
-- If the program crashes on startup first try to delete these two files, if that doesn't do it open an issue.
-- When opening an issue to report a bug, please attach a zip file containing your `images` folder and your `print.json` and `img.cache`.
+## Backend Setup
+High-res search uses the `HighRes.BackendURL` config value. By default it points at:
+- `https://mpcfill.com/`
+
+You can change this from the in-app `Settings` dialog or by editing `config.ini`.
+
+## Caching
+High-res search and image previews are cached to keep repeated browsing snappy.
+
+Important cache locations:
+- `img.cache` for local thumbnail/preview data
+- `.high_res_cache/` for high-res search and image caches
+
+# Settings and Config
+
+Use the `Settings` button to edit app-wide config values such as:
+- display columns in the card grid
+- allow precropped images
+- vibrance bump
+- max crop DPI
+- default paper size
+- high-res backend URL
+- high-res cache TTL
+- high-res search cache size
+- high-res image cache size
+
+These values are stored in `config.ini`.
+
+# Saving and Project Files
+
+The app stores project state in `print.json`, including:
+- selected card counts
+- backside assignments
+- oversized flags
+- imported metadata
+- high-res override metadata
+
+`Save Project` and `Load Project` let you work with other project JSON files too.
+
+The app also remembers window layout and the last-used project path through Qt settings.
+
+# Render Document
+
+When you are happy with the layout, click `Render Document` and choose where to save the PDF. The app renders the file and then attempts to open it automatically.
+
+# Notes
+
+- If the program crashes on startup, first try deleting `print.json`, `img.cache`, and `.high_res_cache`.
+- If you switch to a different image folder, the project and preview caches are rebuilt as needed.
+- `Run Cropper` may be required again after changing settings such as `Max DPI` or `Vibrance Bump`.
+- If you report a bug, include your `images` folder, `print.json`, `img.cache`, and any helpful repro steps.
