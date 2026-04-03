@@ -5,6 +5,7 @@ import datetime
 import json
 
 from constants import cwd
+from models import as_project_state, project_to_dict, sync_project_container
 from util import write_json_atomic
 
 
@@ -341,15 +342,17 @@ def materialize_draft_project(display_name, print_dict, thumbnail_card=None):
         "thumbnail_card": thumbnail_card,
     }
 
-    print_dict["image_dir"] = destination_image_dir
-    print_dict["img_cache"] = os.path.join(destination_image_dir, "img.cache")
+    state = as_project_state(print_dict)
+    state["image_dir"] = destination_image_dir
+    state["img_cache"] = os.path.join(destination_image_dir, "img.cache")
     default_back_source = _shared_default_back_path()
     if default_back_source is not None:
         default_back_name = os.path.basename(default_back_source)
         if os.path.exists(os.path.join(destination_image_dir, default_back_name)):
-            print_dict["backside_default"] = default_back_name
+            state["backside_default"] = default_back_name
 
-    write_json_atomic(path, print_dict, ensure_ascii=False)
+    write_json_atomic(path, state.to_dict(), ensure_ascii=False)
+    sync_project_container(print_dict, state)
     data["projects"].append(entry)
     save_library(data)
     reset_draft_workspace()
@@ -451,10 +454,11 @@ def save_project(project_id, print_dict):
     if entry is None:
         return None
 
-    if not _is_valid_thumbnail_card(print_dict, entry.get("thumbnail_card")):
+    serialized = project_to_dict(print_dict)
+    if not _is_valid_thumbnail_card(serialized, entry.get("thumbnail_card")):
         entry["thumbnail_card"] = None
 
-    write_json_atomic(entry["path"], print_dict, ensure_ascii=False)
+    write_json_atomic(entry["path"], serialized, ensure_ascii=False)
     entry["last_opened_at"] = _utc_now()
     save_library(data)
     return get_project(project_id)

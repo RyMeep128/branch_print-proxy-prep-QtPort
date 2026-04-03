@@ -1,6 +1,7 @@
 import csv
 import html.parser
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -8,6 +9,10 @@ import urllib.request
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Callable
+
+from models import as_project_state, sync_project_container
+
+logger = logging.getLogger(__name__)
 
 
 PRINT_FN = Callable[[str], None]
@@ -260,6 +265,12 @@ def import_entries(
             if backside_name is not None:
                 backside_pairs[imported_card.filename] = backside_name
         except Exception:
+            logger.exception(
+                "deck import entry failed name=%s set_code=%s collector_number=%s",
+                entry.name,
+                entry.set_code,
+                entry.collector_number,
+            )
             failed_cards.append(_format_failed_card(entry))
 
     return ImportResult(
@@ -271,27 +282,33 @@ def import_entries(
 
 
 def apply_imported_counts(print_dict: dict, imported_cards: list[ImportedCard]):
+    state = as_project_state(print_dict)
     for imported_card in imported_cards:
-        print_dict["cards"][imported_card.filename] = imported_card.entry.count
+        state["cards"][imported_card.filename] = imported_card.entry.count
+    return sync_project_container(print_dict, state)
 
 
 def apply_imported_metadata(print_dict: dict, imported_cards: list[ImportedCard]):
-    metadata = print_dict.setdefault("card_metadata", {})
+    state = as_project_state(print_dict)
+    metadata = state.setdefault("card_metadata", {})
     for imported_card in imported_cards:
         metadata[imported_card.filename] = {
             "name": imported_card.entry.name,
             "set_code": imported_card.entry.set_code,
             "collector_number": imported_card.entry.collector_number,
         }
+    return sync_project_container(print_dict, state)
 
 
 def apply_import_result(print_dict: dict, import_result: ImportResult):
-    apply_imported_counts(print_dict, import_result.imported)
-    apply_imported_metadata(print_dict, import_result.imported)
+    state = as_project_state(print_dict)
+    apply_imported_counts(state, import_result.imported)
+    apply_imported_metadata(state, import_result.imported)
     if import_result.backside_pairs:
-        print_dict["backside_enabled"] = True
+        state["backside_enabled"] = True
         for front_name, back_name in import_result.backside_pairs.items():
-            print_dict["backsides"][front_name] = back_name
+            state["backsides"][front_name] = back_name
+    return sync_project_container(print_dict, state)
 
 
 def read_decklist_file(path: str) -> str:

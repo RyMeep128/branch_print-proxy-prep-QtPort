@@ -1,6 +1,5 @@
 import image
 import gui_qt
-from util import *
 
 def main():
     app = gui_qt.init()

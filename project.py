@@ -1,12 +1,17 @@
-import os
 import json
-import time
+import logging
+import os
 import re
+import time
 
 import util
 import image
-from config import *
-from constants import *
+from config import CFG
+from constants import page_sizes
+from models import ProjectState, as_project_state, sync_project_container
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_scryfall_card_metadata(card_name):
@@ -36,6 +41,7 @@ def _detect_default_back_image(source_list, crop_list):
 
 
 def init_dict(print_dict, img_dict, warn_fn=None):
+    state = as_project_state(print_dict)
     default_page_size = CFG.DefaultPageSize
     default_print_dict = {
         # project options
@@ -67,11 +73,11 @@ def init_dict(print_dict, img_dict, warn_fn=None):
 
     # Initialize our default values
     for key, value in default_print_dict.items():
-        if key not in print_dict:
-            print_dict[key] = value
+        if key not in state:
+            state[key] = value
 
     # Get project folders
-    image_dir = print_dict["image_dir"]
+    image_dir = state["image_dir"]
     crop_dir = os.path.join(image_dir, "crop")
     image.init_image_folder(image_dir, crop_dir)
 
@@ -81,50 +87,50 @@ def init_dict(print_dict, img_dict, warn_fn=None):
 
     detected_default_back = _detect_default_back_image(source_list, crop_list)
     if detected_default_back is not None:
-        print_dict["backside_default"] = detected_default_back
+        state["backside_default"] = detected_default_back
 
     # Check that we have all our cards accounted for
     for img in crop_list:
-        if img not in print_dict["cards"].keys():
-            print_dict["cards"][img] = 0 if img.startswith("__") else 1
+        if img not in state["cards"].keys():
+            state["cards"][img] = 0 if img.startswith("__") else 1
 
     # And also check we don't have stale cards in here
     stale_images = []
-    for img in print_dict["cards"].keys():
+    for img in state["cards"].keys():
         if img not in crop_list and img not in source_list:
             stale_images.append(img)
     for img in stale_images:
-        del print_dict["cards"][img]
-        if img in print_dict["backsides"]:
-            del print_dict["backsides"][img]
-        if img in print_dict["backside_short_edge"]:
-            del print_dict["backside_short_edge"][img]
-        if img in print_dict["oversized"]:
-            del print_dict["oversized"][img]
-        if img in print_dict["card_metadata"]:
-            del print_dict["card_metadata"][img]
-        if img in print_dict["high_res_front_overrides"]:
-            del print_dict["high_res_front_overrides"][img]
+        del state["cards"][img]
+        if img in state["backsides"]:
+            del state["backsides"][img]
+        if img in state["backside_short_edge"]:
+            del state["backside_short_edge"][img]
+        if img in state["oversized"]:
+            del state["oversized"][img]
+        if img in state["card_metadata"]:
+            del state["card_metadata"][img]
+        if img in state["high_res_front_overrides"]:
+            del state["high_res_front_overrides"][img]
 
     # Make sure we have a sensible bleed edge
-    bleed_edge = str(print_dict["bleed_edge"])
+    bleed_edge = str(state["bleed_edge"])
     bleed_edge = util.cap_bleed_edge_str(bleed_edge)
     if not util.is_number_string(bleed_edge):
         bleed_edge = "0"
-    print_dict["bleed_edge"] = bleed_edge
+    state["bleed_edge"] = bleed_edge
 
     # Initialize the image amount
     for img in crop_list:
-        if img not in print_dict["cards"].keys():
-            print_dict["cards"][img] = 1
+        if img not in state["cards"].keys():
+            state["cards"][img] = 1
 
     # Deselect images starting with __
     for img in crop_list:
-        print_dict["cards"][img] = (
-            0 if img.startswith("__") else print_dict["cards"][img]
+        state["cards"][img] = (
+            0 if img.startswith("__") else state["cards"][img]
         )
 
-    metadata = print_dict["card_metadata"]
+    metadata = state["card_metadata"]
     for img in source_list:
         if img in metadata:
             continue
@@ -133,7 +139,7 @@ def init_dict(print_dict, img_dict, warn_fn=None):
             metadata[img] = parsed_metadata
 
     # Initialize image cache
-    img_cache = print_dict["img_cache"]
+    img_cache = state["img_cache"]
     if os.path.exists(img_cache):
         try:
             with open(img_cache, "r", encoding="utf-8") as fp:
@@ -141,22 +147,25 @@ def init_dict(print_dict, img_dict, warn_fn=None):
                 img_dict.clear()
                 for key, value in loaded_img_dict.items():
                     img_dict[key] = value
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning("project image cache reset path=%s error=%s", img_cache, exc)
             img_dict.clear()
             if warn_fn is not None:
                 warn_fn(
                     "Cache Reset",
                     "The image cache could not be loaded and was reset. Thumbnails will be rebuilt.",
                 )
+    return sync_project_container(print_dict, state)
 
 
 def init_images(print_dict, img_dict, print_fn):
-    image_dir = print_dict["image_dir"]
+    state = as_project_state(print_dict)
+    image_dir = state["image_dir"]
     crop_dir = os.path.join(image_dir, "crop")
-    img_cache = print_dict["img_cache"]
+    img_cache = state["img_cache"]
 
     # setup crops
-    bleed_edge = float(print_dict["bleed_edge"])
+    bleed_edge = float(state["bleed_edge"])
     if image.need_run_cropper(image_dir, crop_dir, bleed_edge, CFG.VibranceBump):
         image.cropper(
             image_dir,
@@ -171,21 +180,23 @@ def init_images(print_dict, img_dict, print_fn):
         )
 
     # setup image previews
-    img_cache = print_dict["img_cache"]
+    img_cache = state["img_cache"]
     if image.need_cache_previews(crop_dir, img_dict, image_dir):
         image.cache_previews(img_cache, image_dir, crop_dir, print_fn, img_dict)
+    return sync_project_container(print_dict, state)
 
 
 def refresh_after_image_changes(print_dict, img_dict, print_fn, warn_fn=None):
     init_dict(print_dict, img_dict, warn_fn)
     init_images(print_dict, img_dict, print_fn)
-    init_dict(print_dict, img_dict, warn_fn)
+    return init_dict(print_dict, img_dict, warn_fn)
 
 
 def clear_old_cards(print_dict, img_dict):
-    image_dir = print_dict["image_dir"]
+    state = as_project_state(print_dict)
+    image_dir = state["image_dir"]
     crop_dir = os.path.join(image_dir, "crop")
-    img_cache = print_dict["img_cache"]
+    img_cache = state["img_cache"]
 
     image.init_image_folder(image_dir, crop_dir)
 
@@ -218,7 +229,8 @@ def clear_old_cards(print_dict, img_dict):
     if stale_cache_entries:
         util.write_json_atomic(img_cache, img_dict)
 
-    init_dict(print_dict, img_dict)
+    init_dict(state, img_dict)
+    sync_project_container(print_dict, state)
     return deleted_count
 
 
@@ -228,10 +240,10 @@ def load(print_dict, img_dict, json_path, print_fn, warn_fn=None):
         with open(json_path, "r", encoding="utf-8") as fp:
             loaded_print_dict = json.load(fp)
             print_dict.clear()
-            for key, value in loaded_print_dict.items():
-                print_dict[key] = value
+            print_dict.update(ProjectState.from_dict(loaded_print_dict).to_dict())
             loaded_successfully = True
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning("project load failed path=%s error=%s", json_path, exc)
         print_fn(f"Error: Failed loading project ({exc})... Resetting...")
         if warn_fn is not None:
             warn_fn(
