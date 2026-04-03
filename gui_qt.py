@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QSpinBox,
+    QDialogButtonBox,
 )
 
 import pdf
@@ -412,6 +413,130 @@ class LineEditWithLabel(WidgetWithLabel):
     def __init__(self, label_text, default_text=None):
         text = QLineEdit(default_text)
         super().__init__(label_text, text)
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("Settings")
+        self.resize(560, 420)
+
+        description = QLabel(
+            "Edit application-wide settings stored in config.ini. Most changes apply immediately after saving."
+        )
+        description.setWordWrap(True)
+
+        display_columns_spin_box = QSpinBox()
+        display_columns_spin_box.setRange(2, 10)
+        display_columns_spin_box.setSingleStep(1)
+        display_columns_spin_box.setValue(CFG.DisplayColumns)
+        display_columns = WidgetWithLabel("Display &Columns", display_columns_spin_box)
+        display_columns.setToolTip("Number of columns shown in the card grid")
+
+        precropped_checkbox = QCheckBox("Allow Precropped")
+        precropped_checkbox.setChecked(CFG.EnableUncrop)
+        precropped_checkbox.setToolTip(
+            "Allows putting pre-cropped images into images/crop"
+        )
+
+        vibrance_checkbox = QCheckBox("Vibrance Bump")
+        vibrance_checkbox.setChecked(CFG.VibranceBump)
+        vibrance_checkbox.setToolTip("Requires rerunning cropper")
+
+        max_dpi_spin_box = QSpinBox()
+        max_dpi_spin_box.setRange(300, 1200)
+        max_dpi_spin_box.setSingleStep(100)
+        max_dpi_spin_box.setValue(CFG.MaxDPI)
+        max_dpi = WidgetWithLabel("&Max DPI", max_dpi_spin_box)
+        max_dpi.setToolTip("Requires rerunning cropper")
+
+        paper_sizes = ComboBoxWithLabel(
+            "Default P&aper Size", list(page_sizes.keys()), CFG.DefaultPageSize
+        )
+
+        backend_url = LineEditWithLabel("High-Res Backend &URL", CFG.HighResBackendURL)
+        backend_url.setToolTip(
+            "Base URL used for high-res search, such as https://mpcfill.com/"
+        )
+
+        cache_ttl_spin_box = QSpinBox()
+        cache_ttl_spin_box.setRange(0, 24 * 60 * 60)
+        cache_ttl_spin_box.setSingleStep(60)
+        cache_ttl_spin_box.setSuffix(" sec")
+        cache_ttl_spin_box.setValue(CFG.HighResCacheTTLSeconds)
+        cache_ttl = WidgetWithLabel("High-Res Cache &TTL", cache_ttl_spin_box)
+
+        search_cache_spin_box = QSpinBox()
+        search_cache_spin_box.setRange(1, 1024)
+        search_cache_spin_box.setSingleStep(1)
+        search_cache_spin_box.setSuffix(" MB")
+        search_cache_spin_box.setValue(CFG.HighResSearchCacheMemoryMB)
+        search_cache = WidgetWithLabel(
+            "Search Cache Memory", search_cache_spin_box
+        )
+
+        image_cache_spin_box = QSpinBox()
+        image_cache_spin_box.setRange(1, 2048)
+        image_cache_spin_box.setSingleStep(1)
+        image_cache_spin_box.setSuffix(" MB")
+        image_cache_spin_box.setValue(CFG.HighResImageCacheMemoryMB)
+        image_cache = WidgetWithLabel("Image Cache Memory", image_cache_spin_box)
+
+        fields_layout = QVBoxLayout()
+        fields_layout.addWidget(description)
+        fields_layout.addWidget(display_columns)
+        fields_layout.addWidget(precropped_checkbox)
+        fields_layout.addWidget(vibrance_checkbox)
+        fields_layout.addWidget(max_dpi)
+        fields_layout.addWidget(paper_sizes)
+        fields_layout.addWidget(backend_url)
+        fields_layout.addWidget(cache_ttl)
+        fields_layout.addWidget(search_cache)
+        fields_layout.addWidget(image_cache)
+        fields_layout.addStretch()
+
+        fields_widget = QWidget()
+        fields_widget.setLayout(fields_layout)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setWidget(fields_widget)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+
+        layout = QVBoxLayout()
+        layout.addWidget(scroll_area)
+        layout.addWidget(button_box)
+        self.setLayout(layout)
+
+        self._display_columns_spin_box = display_columns_spin_box
+        self._precropped_checkbox = precropped_checkbox
+        self._vibrance_checkbox = vibrance_checkbox
+        self._max_dpi_spin_box = max_dpi_spin_box
+        self._paper_sizes = paper_sizes._widget
+        self._backend_url = backend_url._widget
+        self._cache_ttl_spin_box = cache_ttl_spin_box
+        self._search_cache_spin_box = search_cache_spin_box
+        self._image_cache_spin_box = image_cache_spin_box
+
+    def apply(self):
+        CFG.DisplayColumns = self._display_columns_spin_box.value()
+        CFG.EnableUncrop = self._precropped_checkbox.isChecked()
+        CFG.VibranceBump = self._vibrance_checkbox.isChecked()
+        CFG.MaxDPI = self._max_dpi_spin_box.value()
+        CFG.DefaultPageSize = self._paper_sizes.currentText()
+        CFG.HighResBackendURL = self._backend_url.text().strip()
+        CFG.HighResCacheTTLSeconds = self._cache_ttl_spin_box.value()
+        CFG.HighResSearchCacheMemoryMB = self._search_cache_spin_box.value()
+        CFG.HighResImageCacheMemoryMB = self._image_cache_spin_box.value()
+        save_config(CFG)
 
 
 class HighResThumbnailLoader(QtCore.QThread):
@@ -1191,24 +1316,30 @@ class CardWidget(QWidget):
         if card_name in img_dict:
             effective_dpi = img_dict[card_name].get("effective_dpi")
 
-        low_dpi_warning = (
-            effective_dpi is not None
-            and effective_dpi < low_dpi_warning_threshold
-        )
-        if low_dpi_warning:
-            low_dpi_label = QLabel("Low DPI")
-            low_dpi_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            low_dpi_label.setToolTip(
-                f"This image is approximately {round(effective_dpi)} DPI, below the warning threshold of {low_dpi_warning_threshold} DPI."
-            )
-            low_dpi_label.setStyleSheet(
-                "background-color: #7a1f1f; color: white; font-weight: bold; "
-                "border: 1px solid #b85555; border-radius: 4px; padding: 2px 6px;"
-            )
-            low_dpi_label.setFixedHeight(22)
-            self._low_dpi_label = low_dpi_label
+        if effective_dpi is not None:
+            rounded_dpi = round(effective_dpi)
+            dpi_label = QLabel(f"{rounded_dpi} DPI")
+            dpi_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            if effective_dpi < low_dpi_warning_threshold:
+                dpi_label.setToolTip(
+                    f"This image is approximately {rounded_dpi} DPI, below the warning threshold of {low_dpi_warning_threshold} DPI."
+                )
+                dpi_label.setStyleSheet(
+                    "background-color: #7a1f1f; color: white; font-weight: bold; "
+                    "border: 1px solid #b85555; border-radius: 4px; padding: 2px 6px;"
+                )
+            else:
+                dpi_label.setToolTip(
+                    f"This image is approximately {rounded_dpi} DPI."
+                )
+                dpi_label.setStyleSheet(
+                    "background-color: #1f3c5a; color: white; font-weight: bold; "
+                    "border: 1px solid #5b87b5; border-radius: 4px; padding: 2px 6px;"
+                )
+            dpi_label.setFixedHeight(22)
+            self._dpi_label = dpi_label
         else:
-            self._low_dpi_label = None
+            self._dpi_label = None
 
         if backside_img is not None:
             card_widget = StackedCardBacksideView(img, backside_img)
@@ -1292,8 +1423,8 @@ class CardWidget(QWidget):
 
         layout = QVBoxLayout()
         layout.addWidget(card_widget)
-        if self._low_dpi_label is not None:
-            layout.addWidget(self._low_dpi_label)
+        if self._dpi_label is not None:
+            layout.addWidget(self._dpi_label)
         layout.addWidget(number_area)
         if self._extra_options_area is not None:
             layout.addWidget(extra_options_area)
@@ -1330,8 +1461,8 @@ class CardWidget(QWidget):
 
         additional_widgets = self._number_area.height() + spacing
 
-        if self._low_dpi_label is not None:
-            additional_widgets += self._low_dpi_label.height() + spacing
+        if self._dpi_label is not None:
+            additional_widgets += self._dpi_label.height() + spacing
 
         if self._extra_options_area:
             additional_widgets += self._extra_options_area.height() + spacing
@@ -1840,6 +1971,7 @@ class ActionsWidget(QGroupBox):
         load_button = QPushButton("Load Project")
         set_images_button = QPushButton("Set Image Folder")
         open_images_button = QPushButton("Open Images")
+        settings_button = QPushButton("Settings")
         import_decklist_button = QPushButton("Import Decklist")
         clear_cards_button = QPushButton("Clear Old Cards")
 
@@ -1850,6 +1982,7 @@ class ActionsWidget(QGroupBox):
             load_button,
             set_images_button,
             open_images_button,
+            settings_button,
             import_decklist_button,
             clear_cards_button,
         ]
@@ -1864,8 +1997,9 @@ class ActionsWidget(QGroupBox):
         layout.addWidget(load_button, 1, 1)
         layout.addWidget(set_images_button, 2, 0)
         layout.addWidget(open_images_button, 2, 1)
-        layout.addWidget(import_decklist_button, 3, 0, 1, 2)
-        layout.addWidget(clear_cards_button, 4, 0, 1, 2)
+        layout.addWidget(settings_button, 3, 0, 1, 2)
+        layout.addWidget(import_decklist_button, 4, 0, 1, 2)
+        layout.addWidget(clear_cards_button, 5, 0, 1, 2)
 
         self.setLayout(layout)
 
@@ -2044,6 +2178,31 @@ class ActionsWidget(QGroupBox):
         def open_images_folder():
             open_folder(print_dict["image_dir"])
 
+        def open_settings():
+            prior_values = {
+                "DisplayColumns": CFG.DisplayColumns,
+                "EnableUncrop": CFG.EnableUncrop,
+                "VibranceBump": CFG.VibranceBump,
+                "MaxDPI": CFG.MaxDPI,
+                "DefaultPageSize": CFG.DefaultPageSize,
+                "HighResBackendURL": CFG.HighResBackendURL,
+                "HighResCacheTTLSeconds": CFG.HighResCacheTTLSeconds,
+                "HighResSearchCacheMemoryMB": CFG.HighResSearchCacheMemoryMB,
+                "HighResImageCacheMemoryMB": CFG.HighResImageCacheMemoryMB,
+            }
+            dialog = SettingsDialog(self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            dialog.apply()
+            if prior_values["DisplayColumns"] != CFG.DisplayColumns:
+                self.window().refresh(print_dict, img_dict)
+            elif (
+                prior_values["VibranceBump"] != CFG.VibranceBump
+                or prior_values["DefaultPageSize"] != CFG.DefaultPageSize
+            ):
+                self.window().refresh_preview(print_dict, img_dict)
+
         def import_decklist_images():
             dialog = DeckImportDialog(self, print_dict["image_dir"])
             if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -2153,6 +2312,7 @@ class ActionsWidget(QGroupBox):
         load_button.clicked.connect(load_project)
         set_images_button.clicked.connect(set_images_folder)
         open_images_button.clicked.connect(open_images_folder)
+        settings_button.clicked.connect(open_settings)
         import_decklist_button.clicked.connect(import_decklist_images)
         clear_cards_button.clicked.connect(clear_old_cards)
 
@@ -2374,75 +2534,38 @@ class GlobalOptionsWidget(QGroupBox):
 
         self.setTitle("Global Config")
 
-        display_columns_spin_box = QDoubleSpinBox()
-        display_columns_spin_box.setDecimals(0)
-        display_columns_spin_box.setRange(2, 10)
-        display_columns_spin_box.setSingleStep(1)
-        display_columns_spin_box.setValue(CFG.DisplayColumns)
-        display_columns = WidgetWithLabel("Display &Columns", display_columns_spin_box)
-        display_columns.setToolTip("Number columns in card view")
-
-        precropped_checkbox = QCheckBox("Allow Precropped")
-        precropped_checkbox.setChecked(CFG.EnableUncrop)
-        precropped_checkbox.setToolTip(
-            "Allows putting pre-cropped images into images/crop"
+        description = QLabel(
+            "Open the settings dialog to edit all values stored in config.ini."
         )
+        description.setWordWrap(True)
 
-        vibrance_checkbox = QCheckBox("Vibrance Bump")
-        vibrance_checkbox.setChecked(CFG.VibranceBump)
-        vibrance_checkbox.setToolTip("Requires rerunning cropper")
-
-        max_dpi_spin_box = QDoubleSpinBox()
-        max_dpi_spin_box.setDecimals(0)
-        max_dpi_spin_box.setRange(300, 1200)
-        max_dpi_spin_box.setSingleStep(100)
-        max_dpi_spin_box.setValue(CFG.MaxDPI)
-        max_dpi = WidgetWithLabel("&Max DPI", max_dpi_spin_box)
-        max_dpi.setToolTip("Requires rerunning cropper")
-
-        paper_sizes = ComboBoxWithLabel(
-            "Default P&aper Size", list(page_sizes.keys()), CFG.DefaultPageSize
-        )
+        open_settings_button = QPushButton("Open Settings")
 
         layout = QVBoxLayout()
-        layout.addWidget(display_columns)
-        layout.addWidget(precropped_checkbox)
-        layout.addWidget(vibrance_checkbox)
-        layout.addWidget(max_dpi)
-        layout.addWidget(paper_sizes)
-
+        layout.addWidget(description)
+        layout.addWidget(open_settings_button)
         self.setLayout(layout)
 
-        def change_display_columns(v):
-            CFG.DisplayColumns = int(v)
-            save_config(CFG)
-            self.window().refresh(print_dict, img_dict)
+        def open_settings():
+            prior_values = {
+                "DisplayColumns": CFG.DisplayColumns,
+                "VibranceBump": CFG.VibranceBump,
+                "DefaultPageSize": CFG.DefaultPageSize,
+            }
+            dialog = SettingsDialog(self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
 
-        def change_precropped(s):
-            enabled = s == QtCore.Qt.CheckState.Checked
-            CFG.EnableUncrop = enabled
-            save_config(CFG)
+            dialog.apply()
+            if prior_values["DisplayColumns"] != CFG.DisplayColumns:
+                self.window().refresh(print_dict, img_dict)
+            elif (
+                prior_values["VibranceBump"] != CFG.VibranceBump
+                or prior_values["DefaultPageSize"] != CFG.DefaultPageSize
+            ):
+                self.window().refresh_preview(print_dict, img_dict)
 
-        def change_vibrance_bump(s):
-            enabled = s == QtCore.Qt.CheckState.Checked
-            CFG.VibranceBump = enabled
-            save_config(CFG)
-            self.window().refresh_preview(print_dict, img_dict)
-
-        def change_max_dpi(v):
-            CFG.MaxDPI = int(v)
-            save_config(CFG)
-
-        def change_papersize(t):
-            CFG.DefaultPageSize = t
-            save_config(CFG)
-            self.window().refresh_preview(print_dict, img_dict)
-
-        display_columns_spin_box.valueChanged.connect(change_display_columns)
-        precropped_checkbox.checkStateChanged.connect(change_precropped)
-        vibrance_checkbox.checkStateChanged.connect(change_vibrance_bump)
-        max_dpi_spin_box.valueChanged.connect(change_max_dpi)
-        paper_sizes._widget.currentTextChanged.connect(change_papersize)
+        open_settings_button.clicked.connect(open_settings)
 
 
 class OptionsWidget(QWidget):
