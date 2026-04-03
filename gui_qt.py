@@ -54,6 +54,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QSpinBox,
     QDialogButtonBox,
+    QInputDialog,
 )
 
 import pdf
@@ -266,6 +267,10 @@ class PrintProxyPrepApplication(QApplication):
             return self._window.save_active_project(print_dict)
         return None
 
+    def set_project_thumbnail(self, card_name):
+        if hasattr(self, "_window"):
+            self._window.set_project_thumbnail(card_name)
+
     def autosave_managed_session(self):
         if hasattr(self, "_window"):
             self._window.autosave_managed_session()
@@ -464,6 +469,20 @@ def load_project_file(application, print_dict, img_dict, json_path, print_fn):
     if loaded_successfully:
         application.set_json_path(json_path)
     return loaded_successfully
+
+
+def project_thumbnail_pixmap(image_path, width=120, height=160):
+    pixmap = QPixmap()
+    if image_path and os.path.exists(image_path):
+        pixmap.load(image_path)
+    if pixmap.isNull():
+        pixmap.loadFromData(fallback.data)
+    return pixmap.scaled(
+        width,
+        height,
+        QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+        QtCore.Qt.TransformationMode.SmoothTransformation,
+    )
 
 
 class DeckImportDialog(QDialog):
@@ -1474,6 +1493,18 @@ class CardWidget(QWidget):
         number_area.setLayout(number_layout)
         number_area.setFixedHeight(20)
 
+        thumbnail_button = QPushButton("Set Thumb")
+        thumbnail_button.setToolTip("Use this card as the dashboard thumbnail")
+        thumbnail_button.setFixedHeight(24)
+
+        def set_project_thumbnail():
+            app = QApplication.instance()
+            if app is not None and hasattr(app, "set_project_thumbnail"):
+                app.set_project_thumbnail(card_name)
+
+        thumbnail_button.clicked.connect(set_project_thumbnail)
+        thumbnail_button.setEnabled(card_name is not None)
+
         effective_dpi = None
         if card_name in img_dict:
             effective_dpi = img_dict[card_name].get("effective_dpi")
@@ -1588,6 +1619,7 @@ class CardWidget(QWidget):
         if self._dpi_label is not None:
             layout.addWidget(self._dpi_label)
         layout.addWidget(number_area)
+        layout.addWidget(thumbnail_button)
         if self._extra_options_area is not None:
             layout.addWidget(extra_options_area)
         self.setLayout(layout)
@@ -1599,6 +1631,7 @@ class CardWidget(QWidget):
 
         self._img_widget = img
         self._number_area = number_area
+        self._thumbnail_button = thumbnail_button
 
         number_edit.editingFinished.connect(
             functools.partial(self.edit_number, print_dict)
@@ -1622,6 +1655,7 @@ class CardWidget(QWidget):
         img_height = self._img_widget.heightForWidth(img_width)
 
         additional_widgets = self._number_area.height() + spacing
+        additional_widgets += self._thumbnail_button.height() + spacing
 
         if self._dpi_label is not None:
             additional_widgets += self._dpi_label.height() + spacing
@@ -2763,97 +2797,84 @@ class CardTabs(QTabWidget):
         self.currentChanged.connect(current_changed)
 
 
-class LandingPage(QWidget):
+class ProjectDashboardPage(QWidget):
     def __init__(self, application):
         super().__init__()
 
-        title = QLabel("Print Proxy Prep")
-        title.setStyleSheet("font-size: 28px; font-weight: bold;")
-        subtitle = QLabel(
-            "Choose a fresh editor session or browse your saved projects."
-        )
-        subtitle.setWordWrap(True)
-
-        editor_button = QPushButton("Editor")
-        explorer_button = QPushButton("Project Explorer")
-        editor_button.setMinimumHeight(56)
-        explorer_button.setMinimumHeight(56)
-        editor_button.clicked.connect(application.open_blank_editor)
-        explorer_button.clicked.connect(application.show_project_explorer)
-
-        button_layout = QVBoxLayout()
-        button_layout.addWidget(editor_button)
-        button_layout.addWidget(explorer_button)
-        button_layout.setSpacing(14)
-
-        card = QGroupBox("Start")
-        card.setLayout(button_layout)
-
-        layout = QVBoxLayout()
-        layout.addStretch()
-        layout.addWidget(title, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(subtitle, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
-        layout.addSpacing(18)
-        layout.addWidget(card, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
-        layout.addStretch()
-        self.setLayout(layout)
-
-
-class ProjectExplorerPage(QWidget):
-    def __init__(self, application):
-        super().__init__()
-
-        title = QLabel("Project Explorer")
-        title.setStyleSheet("font-size: 22px; font-weight: bold;")
-
-        project_list = QListWidget()
-        project_list.itemDoubleClicked.connect(lambda _item: self.open_selected())
-        self._project_list = project_list
         self._application = application
         self._projects = []
 
-        open_button = QPushButton("Open")
-        new_button = QPushButton("New Managed Project")
+        title = QLabel("Projects")
+        title.setStyleSheet("font-size: 28px; font-weight: bold;")
+        subtitle = QLabel("Open a saved project or start a fresh draft.")
+        subtitle.setWordWrap(True)
+
+        project_list = QListWidget()
+        project_list.setViewMode(QListWidget.ViewMode.IconMode)
+        project_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        project_list.setMovement(QListWidget.Movement.Static)
+        project_list.setSpacing(14)
+        project_list.setIconSize(QtCore.QSize(120, 160))
+        project_list.setGridSize(QtCore.QSize(220, 230))
+        project_list.itemDoubleClicked.connect(lambda _item: self.open_selected())
+        self._project_list = project_list
+
         import_button = QPushButton("Import Project")
         remove_button = QPushButton("Remove From Library")
-        home_button = QPushButton("Home")
+        new_button = QPushButton("+")
+        new_button.setFixedSize(56, 56)
+        new_button.setStyleSheet(
+            "font-size: 28px; font-weight: bold; border-radius: 28px; "
+            "background-color: #1f6f4a; color: white;"
+        )
+        new_button.setToolTip("Start a new project draft")
 
-        open_button.clicked.connect(self.open_selected)
-        new_button.clicked.connect(self.create_project)
         import_button.clicked.connect(self.import_project)
         remove_button.clicked.connect(self.remove_selected)
-        home_button.clicked.connect(application.show_home)
+        new_button.clicked.connect(application.open_blank_editor)
 
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(open_button)
-        button_layout.addWidget(new_button)
-        button_layout.addWidget(import_button)
-        button_layout.addWidget(remove_button)
-        button_layout.addStretch()
-        button_layout.addWidget(home_button)
+        top_row = QHBoxLayout()
+        top_row.addWidget(title)
+        top_row.addStretch()
+        top_row.addWidget(import_button)
+        top_row.addWidget(remove_button)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.addStretch()
+        bottom_row.addWidget(new_button)
 
         layout = QVBoxLayout()
-        layout.addWidget(title)
+        layout.addLayout(top_row)
+        layout.addWidget(subtitle)
         layout.addWidget(project_list)
-        layout.addLayout(button_layout)
+        layout.addLayout(bottom_row)
         self.setLayout(layout)
 
     def refresh_projects(self):
         self._projects = project_library.list_projects()
         self._project_list.clear()
         for project_entry in self._projects:
-            modified = project_entry.get("modified_at") or project_entry.get("last_opened_at")
+            modified = project_entry.get("modified_at") or project_entry.get(
+                "last_opened_at"
+            )
             modified_text = "Unknown"
             if modified:
                 try:
-                    modified_text = datetime.datetime.fromisoformat(modified).astimezone().strftime("%Y-%m-%d %H:%M")
+                    modified_text = (
+                        datetime.datetime.fromisoformat(modified)
+                        .astimezone()
+                        .strftime("%Y-%m-%d %H:%M")
+                    )
                 except ValueError:
                     modified_text = modified
+
             item = QListWidgetItem(
                 f"{project_entry.get('display_name', 'Untitled Project')}\nModified: {modified_text}"
             )
             item.setData(QtCore.Qt.ItemDataRole.UserRole, project_entry.get("id"))
+            item.setIcon(QIcon(project_thumbnail_pixmap(project_entry.get("thumbnail_path"))))
             self._project_list.addItem(item)
+
         if self._project_list.count() > 0:
             self._project_list.setCurrentRow(0)
 
@@ -2868,11 +2889,6 @@ class ProjectExplorerPage(QWidget):
         if project_id is None:
             return
         self._application.open_managed_project(project_id)
-
-    def create_project(self):
-        project_entry = project_library.create_project()
-        self.refresh_projects()
-        self._application.open_managed_project(project_entry["id"])
 
     def import_project(self):
         selected_path = project_file_dialog(self, FileDialogType.Open, projects_root())
@@ -2925,11 +2941,10 @@ class AppShellWindow(QMainWindow):
 
         stack = QStackedWidget()
         self._stack = stack
-        self._landing_page = LandingPage(application)
-        self._project_explorer_page = ProjectExplorerPage(application)
-        stack.addWidget(self._landing_page)
-        stack.addWidget(self._project_explorer_page)
+        self._dashboard_page = ProjectDashboardPage(application)
+        stack.addWidget(self._dashboard_page)
         self.setCentralWidget(stack)
+        self._dashboard_page.refresh_projects()
 
     def current_project_path(self):
         if self._active_session is not None and self._active_session.get("project_path"):
@@ -3001,15 +3016,64 @@ class AppShellWindow(QMainWindow):
         return result
 
     def show_home(self):
-        self._autosave_managed_session()
-        self._stack.setCurrentWidget(self._landing_page)
-        self._clear_active_session()
+        if not self._leave_active_session():
+            return
+        self._dashboard_page.refresh_projects()
+        self._stack.setCurrentWidget(self._dashboard_page)
 
     def show_project_explorer(self):
-        self._autosave_managed_session()
-        self._project_explorer_page.refresh_projects()
-        self._stack.setCurrentWidget(self._project_explorer_page)
+        self.show_home()
+
+    def _confirm_discard_draft(self):
+        if not project_library.draft_has_user_content():
+            project_library.reset_draft_workspace()
+            return True
+
+        confirm = QMessageBox.question(
+            self,
+            "Discard Draft?",
+            (
+                "This draft has unsaved images in tmp_images.\n\n"
+                "Discard the draft and clear tmp_images?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return False
+
+        project_library.reset_draft_workspace()
+        return True
+
+    def _leave_active_session(self):
+        if self._active_session is None:
+            return True
+
+        if self._active_session.get("managed"):
+            self.save_active_project(self._active_session["print_dict"])
+        elif self._active_session.get("is_draft"):
+            if not self._confirm_discard_draft():
+                return False
+
         self._clear_active_session()
+        return True
+
+    def _prepare_new_draft_workspace(self):
+        if project_library.draft_has_user_content():
+            confirm = QMessageBox.question(
+                self,
+                "Start New Project?",
+                (
+                    "tmp_images already contains an unsaved draft.\n\n"
+                    "Start a fresh draft and clear those temporary images?"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return None
+            return project_library.reset_draft_workspace()
+        return project_library.create_draft_project_dict()
 
     def _autosave_managed_session(self):
         if self._active_session is None or not self._active_session.get("managed"):
@@ -3020,8 +3084,15 @@ class AppShellWindow(QMainWindow):
         self._autosave_managed_session()
 
     def open_blank_editor(self):
+        if not self._leave_active_session():
+            return
+
+        draft_defaults = self._prepare_new_draft_workspace()
+        if draft_defaults is None:
+            return
+
         def build_blank():
-            print_dict = {}
+            print_dict = dict(draft_defaults)
             img_dict = {}
             project.init_dict(print_dict, img_dict, self._application.warn_nonfatal)
             image_dir = print_dict["image_dir"]
@@ -3037,7 +3108,7 @@ class AppShellWindow(QMainWindow):
             return print_dict, img_dict
 
         blank_window = popup(self, "Preparing editor...", self._application._debug_mode)
-        print_dict = {}
+        print_dict = dict(draft_defaults)
         img_dict = {}
 
         def blank_work():
@@ -3053,21 +3124,26 @@ class AppShellWindow(QMainWindow):
             {
                 "project_id": None,
                 "project_path": None,
-                "display_name": "Unsaved Project",
+                "display_name": "Unsaved Draft",
                 "managed": False,
+                "is_draft": True,
+                "thumbnail_card": None,
                 "print_dict": print_dict,
                 "img_dict": img_dict,
             },
         )
 
     def open_managed_project(self, project_id):
+        if not self._leave_active_session():
+            return
+
         project_entry = project_library.get_project(project_id)
         if project_entry is None:
             self._application.warn_nonfatal(
                 "Project Missing",
                 "That project could not be found in the project library.",
             )
-            self._project_explorer_page.refresh_projects()
+            self._dashboard_page.refresh_projects()
             return
 
         print_dict = {}
@@ -3097,14 +3173,17 @@ class AppShellWindow(QMainWindow):
                 "project_path": project_entry["path"],
                 "display_name": project_entry["display_name"],
                 "managed": True,
+                "is_draft": False,
+                "thumbnail_card": project_entry.get("thumbnail_card"),
                 "print_dict": print_dict,
                 "img_dict": img_dict,
             },
         )
 
     def import_and_open_project(self, source_path):
+        if not self._leave_active_session():
+            return
         project_entry = project_library.import_project(source_path)
-        self._project_explorer_page.refresh_projects()
         self.open_managed_project(project_entry["id"])
 
     def save_active_project(self, print_dict):
@@ -3116,21 +3195,58 @@ class AppShellWindow(QMainWindow):
             if saved is not None:
                 session["project_path"] = saved["path"]
                 session["display_name"] = saved["display_name"]
+                session["thumbnail_card"] = saved.get("thumbnail_card")
                 self._current_project_path = saved["path"]
-                self._project_explorer_page.refresh_projects()
+                self._dashboard_page.refresh_projects()
                 self._update_window_title()
             return saved
 
-        created = project_library.create_project()
-        project_library.save_project(created["id"], print_dict)
+        name, accepted = QInputDialog.getText(
+            self,
+            "Save Project",
+            "Project name:",
+        )
+        if not accepted:
+            return None
+
+        display_name = name.strip()
+        if display_name == "":
+            QMessageBox.warning(
+                self, "Project Name Required", "Please enter a project name."
+            )
+            return None
+
+        created = project_library.materialize_draft_project(
+            display_name,
+            print_dict,
+            thumbnail_card=session.get("thumbnail_card"),
+        )
         session["managed"] = True
+        session["is_draft"] = False
         session["project_id"] = created["id"]
         session["project_path"] = created["path"]
         session["display_name"] = created["display_name"]
+        session["thumbnail_card"] = created.get("thumbnail_card")
         self._current_project_path = created["path"]
-        self._project_explorer_page.refresh_projects()
+        self._dashboard_page.refresh_projects()
         self._update_window_title()
         return created
+
+    def set_project_thumbnail(self, card_name):
+        session = self._active_session
+        if session is None or not card_name or card_name.startswith("__"):
+            return
+
+        session["thumbnail_card"] = card_name
+        if session.get("managed") and session.get("project_id") is not None:
+            project_library.set_thumbnail_card(session["project_id"], card_name)
+            self._dashboard_page.refresh_projects()
+
+        QMessageBox.information(
+            self,
+            "Dashboard Thumbnail",
+            f"`{card_name}` is now the dashboard thumbnail for this project.",
+        )
 
     def refresh_widgets(self, print_dict):
         if self._editor_page is not None:
