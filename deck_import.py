@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
@@ -13,6 +14,16 @@ from typing import Callable
 from models import ProjectState, as_project_state
 
 logger = logging.getLogger(__name__)
+
+RECOVERABLE_IMPORT_ERRORS = (
+    OSError,
+    ValueError,
+    TypeError,
+    KeyError,
+    json.JSONDecodeError,
+    urllib.error.URLError,
+    urllib.error.HTTPError,
+)
 
 
 def _sync_legacy_project_dict(target, state: ProjectState) -> ProjectState:
@@ -273,12 +284,13 @@ def import_entries(
             imported.append(imported_card)
             if backside_name is not None:
                 backside_pairs[imported_card.filename] = backside_name
-        except Exception:
+        except RECOVERABLE_IMPORT_ERRORS:
             logger.exception(
-                "deck import entry failed name=%s set_code=%s collector_number=%s",
+                "deck import entry failed operation=import_entry name=%s set_code=%s collector_number=%s image_dir=%s",
                 entry.name,
                 entry.set_code,
                 entry.collector_number,
+                image_dir,
             )
             failed_cards.append(_format_failed_card(entry))
 

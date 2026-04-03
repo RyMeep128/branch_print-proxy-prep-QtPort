@@ -24,6 +24,14 @@ def search_high_res_page(*args, **kwargs):
     return high_res.search_high_res_page(*args, **kwargs)
 
 
+def get_cached_thumbnail_bytes(url: str) -> bytes | None:
+    return high_res.get_cached_thumbnail_bytes(url)
+
+
+def fetch_preview_bytes(url: str, cache_kind: str = "preview") -> bytes:
+    return high_res.fetch_preview_bytes(url, cache_kind=cache_kind)
+
+
 def maybe_find_matching_backside(project_like, *args, **kwargs):
     return high_res.maybe_find_matching_backside(as_project_state(project_like), *args, **kwargs)
 

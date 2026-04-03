@@ -23,6 +23,14 @@ def import_archidekt_url(*args, **kwargs):
     return deck_import.import_archidekt_url(*args, **kwargs)
 
 
+def read_decklist_file(path: str) -> str:
+    return deck_import.read_decklist_file(path)
+
+
+def is_archidekt_url(value: str) -> bool:
+    return deck_import.is_archidekt_url(value)
+
+
 def apply_import_result(state: ProjectState, import_result: deck_import.ImportResult) -> ProjectState:
     state = as_project_state(state)
     for imported_card in import_result.imported:
@@ -64,8 +72,8 @@ def import_into_project(
         )
 
     if import_result.imported:
+        apply_import_result(state, import_result)
         print_fn("Refreshing project...")
         project_service.refresh_after_image_changes(state, img_dict, print_fn, warn_fn)
-        apply_import_result(state, import_result)
 
     return DeckImportWorkflowResult(state=state, import_result=import_result)

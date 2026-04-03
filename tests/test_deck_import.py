@@ -1,4 +1,5 @@
 import deck_import
+import logging
 
 
 def test_parse_decklist_aggregates_duplicate_lines_and_skips_sections():
@@ -146,6 +147,24 @@ def test_import_decklist_reports_partial_failures(tmp_path):
     ]
     assert result.failed_cards == ["Missing Card"]
     assert result.backside_pairs == {}
+
+
+def test_import_decklist_logs_recoverable_entry_failure(tmp_path, caplog):
+    def fake_fetch_json(_url):
+        raise OSError("network down")
+
+    with caplog.at_level(logging.ERROR):
+        result = deck_import.import_decklist(
+            "1 Lightning Bolt\n",
+            str(tmp_path),
+            fetch_json=fake_fetch_json,
+            fetch_bytes=lambda _url: b"image",
+        )
+
+    assert result.imported == []
+    assert result.failed_cards == ["Lightning Bolt"]
+    assert "operation=import_entry" in caplog.text
+    assert "Lightning Bolt" in caplog.text
 
 
 def test_import_decklist_csv_uses_exact_printing_endpoint(tmp_path):

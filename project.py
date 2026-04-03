@@ -157,6 +157,48 @@ def refresh_after_image_changes(print_dict, img_dict, print_fn, warn_fn=None):
     return init_dict(print_dict, img_dict, warn_fn)
 
 
+def delete_card_files(print_dict, img_dict, card_name):
+    state = as_project_state(print_dict)
+    image_dir = state.image_dir
+    crop_dir = os.path.join(image_dir, "crop")
+    img_cache = state.img_cache
+
+    deleted_count = 0
+
+    source_path = os.path.join(image_dir, card_name)
+    if os.path.exists(source_path):
+        os.remove(source_path)
+        deleted_count += 1
+
+    if os.path.exists(crop_dir):
+        for root, _dirs, files in os.walk(crop_dir, topdown=False):
+            for file_name in files:
+                if file_name != card_name:
+                    continue
+                os.remove(os.path.join(root, file_name))
+                deleted_count += 1
+
+            if root != crop_dir and len(os.listdir(root)) == 0:
+                os.rmdir(root)
+
+    if card_name in img_dict:
+        del img_dict[card_name]
+
+    if img_cache and os.path.exists(img_cache):
+        try:
+            with open(img_cache, "r", encoding="utf-8") as fp:
+                cache_data = json.load(fp)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            cache_data = None
+        if isinstance(cache_data, dict) and card_name in cache_data:
+            del cache_data[card_name]
+            util.write_json_atomic(img_cache, cache_data)
+
+    state.remove_card(card_name)
+    _sync_legacy_project_dict(print_dict, state)
+    return deleted_count
+
+
 def clear_old_cards(print_dict, img_dict):
     state = as_project_state(print_dict)
     image_dir = state.image_dir
@@ -200,12 +242,13 @@ def clear_old_cards(print_dict, img_dict):
 
 
 def load(print_dict, img_dict, json_path, print_fn, warn_fn=None):
+    state = as_project_state(print_dict)
+    load_target = print_dict if not isinstance(print_dict, ProjectState) else state
     loaded_successfully = False
     try:
         with open(json_path, "r", encoding="utf-8") as fp:
             loaded_print_dict = json.load(fp)
-            print_dict.clear()
-            print_dict.update(ProjectState.from_dict(loaded_print_dict).to_dict())
+            state.copy_from(ProjectState.from_dict(loaded_print_dict))
             loaded_successfully = True
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         logger.warning("project load failed path=%s error=%s", json_path, exc)
@@ -216,8 +259,18 @@ def load(print_dict, img_dict, json_path, print_fn, warn_fn=None):
                 f"The project file could not be loaded and the project was reset.\n\n{exc}",
             )
         time.sleep(1)
-        print_dict.clear()
+        state.copy_from(ProjectState())
 
-    init_dict(print_dict, img_dict, warn_fn)
-    init_images(print_dict, img_dict, print_fn)
+    if isinstance(print_dict, ProjectState):
+        load_target = state
+    elif loaded_successfully:
+        print_dict.clear()
+        print_dict.update(state.to_dict())
+        load_target = print_dict
+    else:
+        print_dict.clear()
+        load_target = print_dict
+
+    init_dict(load_target, img_dict, warn_fn)
+    init_images(load_target, img_dict, print_fn)
     return loaded_successfully

@@ -29,6 +29,10 @@ def clear_old_cards(project_like, img_dict) -> int:
     return project.clear_old_cards(project_like, img_dict)
 
 
+def delete_card_files(project_like, img_dict, card_name) -> int:
+    return project.delete_card_files(project_like, img_dict, card_name)
+
+
 def load_project(project_like, img_dict, json_path, print_fn, warn_fn=None) -> bool:
     return project.load(project_like, img_dict, json_path, print_fn, warn_fn)
 

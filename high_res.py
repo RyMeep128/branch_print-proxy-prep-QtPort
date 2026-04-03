@@ -1,4 +1,5 @@
 import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -18,6 +19,14 @@ from models import ProjectState, as_project_state
 import util
 
 logger = logging.getLogger(__name__)
+
+RECOVERABLE_HIGH_RES_DOWNLOAD_ERRORS = (
+    OSError,
+    ValueError,
+    TypeError,
+    urllib.error.URLError,
+    urllib.error.HTTPError,
+)
 
 
 def _sync_legacy_project_dict(target, state: ProjectState) -> ProjectState:
@@ -476,8 +485,8 @@ def _validate_downloaded_image_bytes(data: bytes) -> bytes:
 
     try:
         decoded = image_from_bytes(normalized)
-    except Exception as exc:
-        logger.warning("invalid high-res image payload during validation")
+    except (TypeError, ValueError) as exc:
+        logger.warning("invalid high-res image payload during validation operation=validate_image_payload error=%s", exc)
         raise ValueError("Downloaded high-res image data was not a valid image.") from exc
 
     if decoded is None or getattr(decoded, "size", 0) == 0:
@@ -711,22 +720,26 @@ def download_high_res_image(
     if download_link:
         try:
             return _validate_downloaded_image_bytes(fetch_bytes(download_link))
-        except Exception as exc:
+        except RECOVERABLE_HIGH_RES_DOWNLOAD_ERRORS as exc:
             logger.warning(
-                "direct high-res download failed identifier=%s url=%s error=%s",
+                "direct high-res download failed operation=direct_download identifier=%s url=%s error=%s",
                 identifier,
                 download_link,
                 exc,
             )
-            pass
 
     url = GOOGLE_DRIVE_IMAGE_API_URL + "?" + urllib.parse.urlencode({"id": identifier})
     response = fetch_text(url).strip()
     try:
         decoded = base64.b64decode(response, validate=True)
         return _validate_downloaded_image_bytes(decoded)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("google drive fallback failed identifier=%s error=%s", identifier, exc)
+    except (binascii.Error, ValueError, TypeError) as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "google drive fallback failed operation=drive_fallback identifier=%s backend_url=%s error=%s",
+            identifier,
+            GOOGLE_DRIVE_IMAGE_API_URL,
+            exc,
+        )
         raise ValueError(
             "The selected high-res image could not be downloaded as a valid image file."
         ) from exc

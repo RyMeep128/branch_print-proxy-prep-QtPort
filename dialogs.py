@@ -31,15 +31,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-import deck_import
-import high_res
 import image
-import project
 import project_library
 from background_tasks import HighResThumbnailLoader, make_popup_print_fn, popup
 from config import CFG, save_config
 from constants import cwd, page_sizes
-from services import deck_import_service, high_res_service
+from models import ProjectState, as_project_state, project_to_dict
+from services import deck_import_service, high_res_service, project_service
 
 logger = logging.getLogger(__name__)
 
@@ -175,8 +173,9 @@ def folder_dialog(parent=None):
 
 
 def load_project_file(application, print_dict, img_dict, json_path, print_fn):
-    loaded_successfully = project.load(
-        print_dict,
+    state = print_dict if isinstance(print_dict, ProjectState) else print_dict
+    loaded_successfully = project_service.load_project(
+        state,
         img_dict,
         json_path,
         print_fn,
@@ -188,12 +187,14 @@ def load_project_file(application, print_dict, img_dict, json_path, print_fn):
 
 
 def remove_card_from_project_state(print_dict, card_name):
-    if card_name in print_dict.get("cards", {}):
-        del print_dict["cards"][card_name]
-    for key in ["backsides", "backside_short_edge", "oversized", "high_res_front_overrides"]:
-        values = print_dict.get(key)
-        if isinstance(values, dict) and card_name in values:
-            del values[card_name]
+    state = as_project_state(print_dict)
+    state.remove_card(card_name)
+    if isinstance(print_dict, ProjectState):
+        return state
+
+    print_dict.clear()
+    print_dict.update(project_to_dict(state))
+    return state
 
 
 def delete_project_with_confirmation(parent, application, project_id, refresh_fn):
@@ -293,12 +294,12 @@ class DeckImportDialog(QDialog):
             if decklist_path is None:
                 return
             try:
-                self._text_edit.setPlainText(deck_import.read_decklist_file(decklist_path))
+                self._text_edit.setPlainText(deck_import_service.read_decklist_file(decklist_path))
             except OSError as exc:
                 QMessageBox.warning(self, "Decklist Load Failed", f"The decklist file could not be loaded.\n\n{exc}")
 
         def import_deck():
-            if len(self.archidekt_url().strip()) > 0 and not deck_import.is_archidekt_url(self.archidekt_url()):
+            if len(self.archidekt_url().strip()) > 0 and not deck_import_service.is_archidekt_url(self.archidekt_url()):
                 QToolTip.showText(QCursor.pos(), "Enter a valid public Archidekt deck URL")
                 return
             if len(self.archidekt_url().strip()) == 0 and len(self.deck_text().strip()) == 0:
@@ -431,10 +432,10 @@ class HighResPickerDialog(QDialog):
         self.setWindowTitle("Choose Better Front Image")
         self.resize(960, 680)
 
-        self._print_dict = print_dict
+        self._state = as_project_state(print_dict)
         self._img_dict = img_dict
         self._card_name = card_name
-        self._context = high_res_service.build_card_context(card_name, print_dict)
+        self._context = high_res_service.build_card_context(card_name, self._state)
         self._candidates = []
         self._thumbnail_cache = {}
         self._preview_cache = {}
@@ -450,7 +451,7 @@ class HighResPickerDialog(QDialog):
         helper_text = QLabel("Use this only if you want to replace the current front image with a higher-resolution version.")
         helper_text.setWordWrap(True)
 
-        current_override = print_dict.get("high_res_front_overrides", {}).get(card_name)
+        current_override = self._state.get_high_res_override(card_name)
         current_source_text = "Current source: Scryfall import"
         if current_override is not None:
             current_source_text = (
@@ -609,7 +610,7 @@ class HighResPickerDialog(QDialog):
                 continue
             if candidate.identifier in self._thumbnail_cache:
                 continue
-            cached = high_res.get_cached_thumbnail_bytes(candidate.small_thumbnail_url)
+            cached = high_res_service.get_cached_thumbnail_bytes(candidate.small_thumbnail_url)
             if cached is not None:
                 self._thumbnail_cache[candidate.identifier] = cached
                 item = self._results_list.item(row)
@@ -757,7 +758,7 @@ class HighResPickerDialog(QDialog):
                     if not url:
                         preview_bytes = None
                         return
-                    preview_bytes = high_res.fetch_preview_bytes(url, cache_kind="preview")
+                    preview_bytes = high_res_service.fetch_preview_bytes(url, cache_kind="preview")
                 except (OSError, ValueError) as exc:
                     error = exc
 
@@ -796,7 +797,7 @@ class HighResPickerDialog(QDialog):
             nonlocal error, backside_match
             try:
                 result = high_res_service.apply_candidate_to_project(
-                    self._print_dict,
+                    self._state,
                     self._img_dict,
                     self._card_name,
                     candidate,

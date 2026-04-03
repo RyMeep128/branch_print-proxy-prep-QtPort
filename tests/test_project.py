@@ -355,6 +355,51 @@ def test_clear_old_cards_removes_card_images_but_preserves_default_back(tmp_path
     assert print_dict["backsides"] == {}
     assert print_dict["backside_short_edge"] == {}
     assert print_dict["oversized"] == {}
+
+
+def test_delete_card_files_removes_source_crop_and_cache_entries(tmp_path):
+    image_dir = tmp_path / "images"
+    crop_dir = image_dir / "crop"
+    crop_variant_dir = crop_dir / "vibrance"
+    image_dir.mkdir()
+    crop_dir.mkdir()
+    crop_variant_dir.mkdir()
+
+    card_name = "card-a.png"
+    (image_dir / card_name).write_bytes(b"source")
+    (crop_dir / card_name).write_bytes(b"crop")
+    (crop_variant_dir / card_name).write_bytes(b"variant")
+    img_cache = image_dir / "img.cache"
+    img_cache.write_text(json.dumps({card_name: {"data": "cached"}, "other.png": {"data": "keep"}}), encoding="utf-8")
+
+    print_dict = {
+        "image_dir": str(image_dir),
+        "img_cache": str(img_cache),
+        "cards": {card_name: 1, "other.png": 2},
+        "backsides": {card_name: "__back.png"},
+        "backside_short_edge": {card_name: True},
+        "oversized": {card_name: True},
+        "card_metadata": {card_name: {"name": "Card A"}},
+        "high_res_front_overrides": {card_name: {"identifier": "abc"}},
+    }
+    img_dict = {card_name: {"data": "cached"}, "other.png": {"data": "keep"}}
+
+    deleted_count = project.delete_card_files(print_dict, img_dict, card_name)
+
+    assert deleted_count == 3
+    assert not (image_dir / card_name).exists()
+    assert not (crop_dir / card_name).exists()
+    assert not (crop_variant_dir / card_name).exists()
+    assert card_name not in img_dict
+    assert print_dict["cards"] == {"other.png": 2}
+    assert print_dict["backsides"] == {}
+    assert print_dict["backside_short_edge"] == {}
+    assert print_dict["oversized"] == {}
+    assert print_dict["card_metadata"] == {}
+    assert print_dict["high_res_front_overrides"] == {}
+    cache_data = json.loads(img_cache.read_text(encoding="utf-8"))
+    assert card_name not in cache_data
+    assert cache_data["other.png"] == {"data": "keep"}
     assert img_dict == {"__back.jpg": {"size": [1, 1], "data": "b''"}}
     assert json.loads(img_cache.read_text(encoding="utf-8")) == img_dict
 

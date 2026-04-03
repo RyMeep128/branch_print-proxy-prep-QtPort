@@ -4,6 +4,7 @@ import math
 import json
 import datetime
 import functools
+import subprocess
 
 import PyQt6.QtCore as QtCore
 from PyQt6.QtGui import QPixmap, QIntValidator, QPainter, QPainterPath, QCursor, QTransform
@@ -38,10 +39,7 @@ from PyQt6.QtWidgets import (
 
 import pdf
 import image
-import project
 import project_library
-import deck_import
-import high_res
 import fallback_image as fallback
 from config import CFG
 from constants import (
@@ -50,6 +48,7 @@ from constants import (
     low_dpi_warning_threshold,
     page_sizes,
 )
+from models import ProjectState, as_project_state
 from util import inch_to_mm, mm_to_inch, open_folder, point_to_inch
 from background_tasks import make_popup_print_fn, popup
 from dialogs import (
@@ -63,11 +62,9 @@ from dialogs import (
     delete_project_with_confirmation,
     folder_dialog,
     image_file_dialog,
-    load_project_file,
     project_file_dialog,
-    remove_card_from_project_state,
 )
-from services import deck_import_service, pdf_service
+from services import deck_import_service, pdf_service, project_service
 
 
 def project_thumbnail_pixmap(image_path, width=120, height=160):
@@ -112,16 +109,16 @@ class EditorPage(QWidget):
         self._options = options
         self._print_preview = print_preview
 
-    def refresh_widgets(self, print_dict):
-        self._options.refresh_widgets(print_dict)
+    def refresh_widgets(self, state):
+        self._options.refresh_widgets(state)
 
-    def refresh(self, print_dict, img_dict):
-        self._scroll_area.refresh(print_dict, img_dict)
-        self._options.refresh(print_dict, img_dict)
-        self.refresh_preview(print_dict, img_dict)
+    def refresh(self, state, img_dict):
+        self._scroll_area.refresh(state, img_dict)
+        self._options.refresh(state, img_dict)
+        self.refresh_preview(state, img_dict)
 
-    def refresh_preview(self, print_dict, img_dict):
-        self._print_preview.refresh(print_dict, img_dict)
+    def refresh_preview(self, state, img_dict):
+        self._print_preview.refresh(state, img_dict)
 
 
 class WorkflowGuideWidget(QGroupBox):
@@ -346,6 +343,7 @@ class CardWidget(QWidget):
     def __init__(self, print_dict, img_dict, card_name):
         super().__init__()
         self.setMouseTracking(True)
+        state = as_project_state(print_dict)
 
         if card_name in img_dict:
             img_data = eval(img_dict[card_name]["data"])
@@ -357,26 +355,26 @@ class CardWidget(QWidget):
         img.setToolTip("Click to choose a higher-resolution front image")
 
         def open_high_res_picker():
-            dialog = HighResPickerDialog(self, print_dict, img_dict, card_name)
+            dialog = HighResPickerDialog(self, state, img_dict, card_name)
             if dialog.exec() == QDialog.DialogCode.Accepted and dialog.was_applied():
-                self.window().refresh(print_dict, img_dict)
+                self.window().refresh(state, img_dict)
 
         if card_name is not None:
             img.clicked.connect(open_high_res_picker)
 
-        backside_enabled = print_dict["backside_enabled"]
-        oversized_enabled = print_dict["oversized_enabled"]
+        backside_enabled = state.backside_enabled
+        oversized_enabled = state.oversized_enabled
 
         backside_img = None
         if backside_enabled:
             backside_name = (
-                print_dict["backsides"][card_name]
-                if card_name in print_dict["backsides"]
-                else print_dict["backside_default"]
+                state.backsides[card_name]
+                if card_name in state.backsides
+                else state.backside_default
             )
             backside_img = BacksideImage(backside_name, img_dict)
 
-        initial_number = print_dict["cards"][card_name] if card_name is not None else 1
+        initial_number = state.cards[card_name] if card_name is not None else 1
 
         number_edit = QLineEdit()
         number_edit.setValidator(QIntValidator(0, 100, self))
@@ -433,7 +431,7 @@ class CardWidget(QWidget):
                     "Remove Card",
                     (
                         f"Remove '{card_name}' from this project?\n\n"
-                        "This will remove it from the current project only. Image files will stay on disk."
+                        "This will remove it from the project and delete that card image from disk."
                     ),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No,
@@ -441,13 +439,28 @@ class CardWidget(QWidget):
                 if confirm != QMessageBox.StandardButton.Yes:
                     return
 
-                remove_card_from_project_state(print_dict, card_name)
+                application = QApplication.instance()
+                try:
+                    project_service.delete_card_files(state, img_dict, card_name)
+                except OSError as exc:
+                    if application is not None and hasattr(application, "warn_nonfatal"):
+                        application.warn_nonfatal(
+                            "Remove Card Failed",
+                            f"The card image could not be fully deleted from disk.\n\n{exc}",
+                        )
+                    else:
+                        QMessageBox.warning(
+                            self,
+                            "Remove Card Failed",
+                            f"The card image could not be fully deleted from disk.\n\n{exc}",
+                        )
+                    return
                 window = self.window()
                 if window is not None and hasattr(
                     window, "clear_project_thumbnail_if_matches"
                 ):
                     window.clear_project_thumbnail_if_matches(card_name)
-                self.window().refresh(print_dict, img_dict)
+                self.window().refresh(state, img_dict)
 
             delete_button.clicked.connect(delete_card)
 
@@ -484,20 +497,20 @@ class CardWidget(QWidget):
             card_widget = StackedCardBacksideView(img, backside_img)
 
             def backside_reset():
-                if card_name in print_dict["backsides"]:
-                    del print_dict["backsides"][card_name]
+                if card_name in state.backsides:
+                    del state.backsides[card_name]
                     new_backside_img = BacksideImage(
-                        print_dict["backside_default"], img_dict
+                        state.backside_default, img_dict
                     )
                     card_widget.refresh_backside(new_backside_img)
 
             def backside_choose():
-                backside_choice = image_file_dialog(self, print_dict["image_dir"])
+                backside_choice = image_file_dialog(self, state.image_dir)
                 if backside_choice is not None and (
-                    card_name not in print_dict["backsides"]
-                    or backside_choice != print_dict["backsides"][card_name]
+                    card_name not in state.backsides
+                    or backside_choice != state.backsides[card_name]
                 ):
-                    print_dict["backsides"][card_name] = backside_choice
+                    state.backsides[card_name] = backside_choice
                     new_backside_img = BacksideImage(backside_choice, img_dict)
                     card_widget.refresh_backside(new_backside_img)
 
@@ -511,8 +524,8 @@ class CardWidget(QWidget):
 
             if backside_enabled:
                 is_short_edge = (
-                    print_dict["backside_short_edge"][card_name]
-                    if card_name in print_dict["backside_short_edge"]
+                    state.backside_short_edge[card_name]
+                    if card_name in state.backside_short_edge
                     else False
                 )
                 short_edge_checkbox = QCheckBox("Flip on Short Edge")
@@ -522,15 +535,15 @@ class CardWidget(QWidget):
                 )
 
                 short_edge_checkbox.checkStateChanged.connect(
-                    functools.partial(self.toggle_short_edge, print_dict)
+                    functools.partial(self.toggle_short_edge, state)
                 )
 
                 extra_options.append(short_edge_checkbox)
 
             if oversized_enabled:
                 is_oversized = (
-                    print_dict["oversized"][card_name]
-                    if card_name in print_dict["oversized"]
+                    state.oversized[card_name]
+                    if card_name in state.oversized
                     else False
                 )
                 oversized_checkbox = QCheckBox("Oversized")
@@ -540,7 +553,7 @@ class CardWidget(QWidget):
                 oversized_checkbox.setChecked(is_oversized)
 
                 oversized_checkbox.checkStateChanged.connect(
-                    functools.partial(self.toggle_oversized, print_dict)
+                    functools.partial(self.toggle_oversized, state)
                 )
 
                 extra_options.append(oversized_checkbox)
@@ -581,10 +594,10 @@ class CardWidget(QWidget):
         self._delete_button = delete_button
 
         number_edit.editingFinished.connect(
-            functools.partial(self.edit_number, print_dict)
+            functools.partial(self.edit_number, state)
         )
-        decrement_button.clicked.connect(functools.partial(self.dec_number, print_dict))
-        increment_button.clicked.connect(functools.partial(self.inc_number, print_dict))
+        decrement_button.clicked.connect(functools.partial(self.dec_number, state))
+        increment_button.clicked.connect(functools.partial(self.inc_number, state))
 
         margins = self.layout().contentsMargins()
         minimum_img_width = img.minimumWidth()
@@ -629,34 +642,34 @@ class CardWidget(QWidget):
 
         return img_height + additional_widgets + margins.top() + margins.bottom()
 
-    def apply_number(self, print_dict, number):
+    def apply_number(self, state, number):
         self._number_edit.setText(str(number))
-        print_dict["cards"][self._card_name] = number
+        state.cards[self._card_name] = number
 
-    def edit_number(self, print_dict):
+    def edit_number(self, state):
         number = int(self._number_edit.text())
         number = max(number, 0)
-        self.apply_number(print_dict, number)
+        self.apply_number(state, number)
 
-    def dec_number(self, print_dict):
-        number = print_dict["cards"][self._card_name] - 1
+    def dec_number(self, state):
+        number = state.cards[self._card_name] - 1
         number = max(number, 0)
-        self.apply_number(print_dict, number)
+        self.apply_number(state, number)
 
-    def inc_number(self, print_dict):
-        number = print_dict["cards"][self._card_name] + 1
+    def inc_number(self, state):
+        number = state.cards[self._card_name] + 1
         number = min(number, 999)
-        self.apply_number(print_dict, number)
+        self.apply_number(state, number)
 
-    def toggle_short_edge(self, print_dict, s):
-        short_edge_dict = print_dict["backside_short_edge"]
+    def toggle_short_edge(self, state, s):
+        short_edge_dict = state.backside_short_edge
         if s == QtCore.Qt.CheckState.Checked:
             short_edge_dict[self._card_name] = True
         elif self._card_name in short_edge_dict:
             del short_edge_dict[self._card_name]
 
-    def toggle_oversized(self, print_dict, s):
-        oversized_dict = print_dict["oversized"]
+    def toggle_oversized(self, state, s):
+        oversized_dict = state.oversized
         if s == QtCore.Qt.CheckState.Checked:
             oversized_dict[self._card_name] = True
         elif self._card_name in oversized_dict:
@@ -668,19 +681,19 @@ class DummyCardWidget(CardWidget):
         super().__init__(print_dict, img_dict, None)
         self._card_name = "__dummy"
 
-    def apply_number(self, print_dict, number):
+    def apply_number(self, state, number):
         pass
 
-    def edit_number(self, print_dict):
+    def edit_number(self, state):
         pass
 
-    def dec_number(self, print_dict):
+    def dec_number(self, state):
         pass
 
-    def inc_number(self, print_dict):
+    def inc_number(self, state):
         pass
 
-    def toggle_oversized(self, print_dict, s):
+    def toggle_oversized(self, state, s):
         pass
 
 
@@ -689,11 +702,12 @@ class CardGrid(QWidget):
         super().__init__()
 
         self._cards = {}
+        state = as_project_state(print_dict)
 
         grid_layout = QGridLayout()
         grid_layout.setContentsMargins(9, 9, 9, 9)
         self.setLayout(grid_layout)
-        self.refresh(print_dict, img_dict)
+        self.refresh(state, img_dict)
 
     def totalWidthFromItemWidth(self, item_width):
         margins = self.layout().contentsMargins()
@@ -730,6 +744,7 @@ class CardGrid(QWidget):
         self.setFixedHeight(height)
 
     def refresh(self, print_dict, img_dict):
+        state = as_project_state(print_dict)
         for card in self._cards.values():
             card.setParent(None)
         self._cards = {}
@@ -738,11 +753,11 @@ class CardGrid(QWidget):
 
         i = 0
         cols = CFG.DisplayColumns
-        for card_name, _ in print_dict["cards"].items():
+        for card_name, _ in state.cards.items():
             if card_name.startswith("__") or card_name not in img_dict:
                 continue
 
-            card_widget = CardWidget(print_dict, img_dict, card_name)
+            card_widget = CardWidget(state, img_dict, card_name)
             self._cards[card_name] = card_widget
 
             x = i // cols
@@ -751,7 +766,7 @@ class CardGrid(QWidget):
             i = i + 1
 
         for j in range(i, cols):
-            card_widget = DummyCardWidget(print_dict, img_dict)
+            card_widget = DummyCardWidget(state, img_dict)
             sp_retain = card_widget.sizePolicy()
             sp_retain.setRetainSizeWhenHidden(True)
             card_widget.setSizePolicy(sp_retain)
@@ -780,6 +795,7 @@ class CardGrid(QWidget):
 class CardScrollArea(QScrollArea):
     def __init__(self, print_dict, card_grid):
         super().__init__()
+        state = as_project_state(print_dict)
 
         global_label = QLabel("All Cards:")
         global_decrement_button = QPushButton("Remove 1")
@@ -829,15 +845,15 @@ class CardScrollArea(QScrollArea):
 
         def dec_number():
             for card in card_grid._cards.values():
-                card.dec_number(print_dict)
+                card.dec_number(state)
 
         def inc_number():
             for card in card_grid._cards.values():
-                card.inc_number(print_dict)
+                card.inc_number(state)
 
         def reset_number():
             for card in card_grid._cards.values():
-                card.apply_number(print_dict, 0)
+                card.apply_number(state, 0)
 
         global_decrement_button.clicked.connect(dec_number)
         global_increment_button.clicked.connect(inc_number)
@@ -861,8 +877,8 @@ class CardScrollArea(QScrollArea):
         super().showEvent(event)
         self.setMinimumWidth(self.computeMinimumWidth())
 
-    def refresh(self, print_dict, img_dict):
-        self._card_grid.refresh(print_dict, img_dict)
+    def refresh(self, state, img_dict):
+        self._card_grid.refresh(state, img_dict)
         self._update_empty_state()
         self.setMinimumWidth(self.computeMinimumWidth())
         self._card_grid.adjustSize()  # forces recomputing size
@@ -1030,16 +1046,17 @@ class PrintPreview(QScrollArea):
     def __init__(self, print_dict, img_dict):
         super().__init__()
 
-        self.refresh(print_dict, img_dict)
+        self.refresh(as_project_state(print_dict), img_dict)
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
 
     def refresh(self, print_dict, img_dict):
-        bleed_edge = float(print_dict["bleed_edge"])
+        state = as_project_state(print_dict)
+        bleed_edge = float(state.bleed_edge)
         bleed_edge_inch = mm_to_inch(bleed_edge)
 
-        page_size = page_sizes[print_dict["pagesize"]]
-        if print_dict["orient"] == "Landscape":
+        page_size = page_sizes[state.pagesize]
+        if state.orient == "Landscape":
             page_size = tuple(page_size[::-1])
         page_size = tuple(point_to_inch(p) for p in page_size)
         (page_width, page_height) = page_size
@@ -1051,7 +1068,7 @@ class PrintPreview(QScrollArea):
         columns = int(page_width // card_width)
         rows = int(page_height // card_height)
 
-        raw_pages = pdf.distribute_cards_to_pages(print_dict, columns, rows)
+        raw_pages = pdf.distribute_cards_to_pages(state, columns, rows)
         pages = [
             {
                 "cards": page,
@@ -1060,8 +1077,8 @@ class PrintPreview(QScrollArea):
             for page in raw_pages
         ]
 
-        if print_dict["backside_enabled"]:
-            backside_pages = pdf.make_backside_pages(print_dict, raw_pages)
+        if state.backside_enabled:
+            backside_pages = pdf.make_backside_pages(state, raw_pages)
             backside_pages = [
                 {
                     "cards": page,
@@ -1099,7 +1116,7 @@ class PrintPreview(QScrollArea):
                 columns,
                 rows,
                 bleed_edge,
-                float(print_dict["backside_offset"]),
+                float(state.backside_offset),
                 page_size,
                 img_get,
             )
@@ -1146,6 +1163,7 @@ class ActionsWidget(QGroupBox):
         img_dict,
     ):
         super().__init__()
+        state = as_project_state(print_dict)
 
         self.setTitle("Main Actions")
 
@@ -1284,8 +1302,8 @@ class ActionsWidget(QGroupBox):
         self.setLayout(layout)
 
         def render():
-            bleed_edge = float(print_dict["bleed_edge"])
-            image_dir = print_dict["image_dir"]
+            bleed_edge = float(state.bleed_edge)
+            image_dir = state.image_dir
             crop_dir = os.path.join(image_dir, "crop")
             if image.need_run_cropper(
                 image_dir, crop_dir, bleed_edge, CFG.VibranceBump
@@ -1298,8 +1316,8 @@ class ActionsWidget(QGroupBox):
 
             rgx = re.compile(r"\W")
             default_pdf_name = (
-                f"{re.sub(rgx, '', print_dict['filename'])}.pdf"
-                if len(print_dict["filename"]) > 0
+                f"{re.sub(rgx, '', state.filename)}.pdf"
+                if len(state.filename) > 0
                 else "_printme.pdf"
             )
             pdf_path = QFileDialog.getSaveFileName(
@@ -1314,13 +1332,13 @@ class ActionsWidget(QGroupBox):
             if not pdf_path.lower().endswith(".pdf"):
                 pdf_path = pdf_path + ".pdf"
 
-            print_dict["filename"] = os.path.splitext(os.path.basename(pdf_path))[0]
+            state.filename = os.path.splitext(os.path.basename(pdf_path))[0]
 
             def render_work():
                 result = pdf_service.generate_pdf(
-                    print_dict,
+                    state,
                     crop_dir,
-                    page_sizes[print_dict["pagesize"]],
+                    page_sizes[state.pagesize],
                     pdf_path,
                     make_popup_print_fn(render_window),
                 )
@@ -1346,10 +1364,10 @@ class ActionsWidget(QGroupBox):
             )
 
         def run_cropper():
-            bleed_edge = float(print_dict["bleed_edge"])
-            image_dir = print_dict["image_dir"]
+            bleed_edge = float(state.bleed_edge)
+            image_dir = state.image_dir
             crop_dir = os.path.join(image_dir, "crop")
-            img_cache = print_dict["img_cache"]
+            img_cache = state.img_cache
             if image.need_run_cropper(
                 image_dir, crop_dir, bleed_edge, CFG.VibranceBump
             ):
@@ -1370,26 +1388,26 @@ class ActionsWidget(QGroupBox):
                     )
 
                     for img in image.list_image_files(crop_dir):
-                        if img not in print_dict["cards"].keys():
-                            print_dict["cards"][img] = 1
+                        if img not in state.cards:
+                            state.cards[img] = 1
                             self._rebuild_after_cropper = True
 
                     deleted_images = []
-                    for img in print_dict["cards"].keys():
+                    for img in state.cards.keys():
                         if img not in img_dict.keys():
                             deleted_images.append(img)
                             self._rebuild_after_cropper = True
                     for img in deleted_images:
-                        del print_dict["cards"][img]
+                        del state.cards[img]
 
                 self.window().setEnabled(False)
                 crop_window = popup(self.window(), "Cropping images...", application._debug_mode)
                 crop_window.show_during_work(cropper_work)
                 del crop_window
                 if self._rebuild_after_cropper:
-                    self.window().refresh(print_dict, img_dict)
+                    self.window().refresh(state, img_dict)
                 else:
-                    self.window().refresh_preview(print_dict, img_dict)
+                    self.window().refresh_preview(state, img_dict)
                 self.window().setEnabled(True)
             else:
                 QToolTip.showText(
@@ -1398,7 +1416,7 @@ class ActionsWidget(QGroupBox):
                 )
 
         def save_project():
-            saved = application.save_active_project(print_dict)
+            saved = application.save_active_project(state)
             if saved is None:
                 return
 
@@ -1418,12 +1436,12 @@ class ActionsWidget(QGroupBox):
         def set_images_folder():
             new_image_dir = folder_dialog(self)
             if new_image_dir is not None:
-                print_dict["image_dir"] = new_image_dir
-                print_dict["img_cache"] = os.path.join(new_image_dir, "img.cache")
+                state.image_dir = new_image_dir
+                state.img_cache = os.path.join(new_image_dir, "img.cache")
 
-                project.init_dict(print_dict, img_dict, application.warn_nonfatal)
+                project_service.init_dict(state, img_dict, application.warn_nonfatal)
 
-                bleed_edge = float(print_dict["bleed_edge"])
+                bleed_edge = float(state.bleed_edge)
                 image_dir = new_image_dir
                 crop_dir = os.path.join(image_dir, "crop")
                 if image.need_run_cropper(
@@ -1431,21 +1449,21 @@ class ActionsWidget(QGroupBox):
                 ) or image.need_cache_previews(crop_dir, img_dict, image_dir):
 
                     def reload_work():
-                        project.init_images(
-                            print_dict, img_dict, make_popup_print_fn(reload_window)
+                        project_service.init_images(
+                            state, img_dict, make_popup_print_fn(reload_window)
                         )
 
                     self.window().setEnabled(False)
                     reload_window = popup(self.window(), "Reloading project...", application._debug_mode)
                     reload_window.show_during_work(reload_work)
                     del reload_window
-                    self.window().refresh(print_dict, img_dict)
+                    self.window().refresh(state, img_dict)
                     self.window().setEnabled(True)
                 else:
-                    self.window().refresh(print_dict, img_dict)
+                    self.window().refresh(state, img_dict)
 
         def open_images_folder():
-            open_folder(print_dict["image_dir"])
+            open_folder(state.image_dir)
 
         def open_settings():
             prior_values = {
@@ -1465,15 +1483,15 @@ class ActionsWidget(QGroupBox):
 
             dialog.apply()
             if prior_values["DisplayColumns"] != CFG.DisplayColumns:
-                self.window().refresh(print_dict, img_dict)
+                self.window().refresh(state, img_dict)
             elif (
                 prior_values["VibranceBump"] != CFG.VibranceBump
                 or prior_values["DefaultPageSize"] != CFG.DefaultPageSize
             ):
-                self.window().refresh_preview(print_dict, img_dict)
+                self.window().refresh_preview(state, img_dict)
 
         def import_decklist_images():
-            dialog = DeckImportDialog(self, print_dict["image_dir"])
+            dialog = DeckImportDialog(self, state.image_dir)
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
 
@@ -1486,9 +1504,9 @@ class ActionsWidget(QGroupBox):
                 nonlocal import_result, import_error
                 try:
                     workflow_result = deck_import_service.import_into_project(
-                        print_dict,
+                        state,
                         img_dict,
-                        print_dict["image_dir"],
+                        state.image_dir,
                         make_popup_print_fn(import_window),
                         deck_text=deck_text,
                         archidekt_url=archidekt_url,
@@ -1518,7 +1536,7 @@ class ActionsWidget(QGroupBox):
                 return
 
             if import_result.imported:
-                self.window().refresh(print_dict, img_dict)
+                self.window().refresh(state, img_dict)
 
             summary_lines = [
                 f"Imported {len(import_result.imported)} unique cards "
@@ -1560,7 +1578,7 @@ class ActionsWidget(QGroupBox):
                 return
 
             try:
-                project.clear_old_cards(print_dict, img_dict)
+                project_service.clear_old_cards(state, img_dict)
             except OSError as exc:
                 application.warn_nonfatal(
                     "Remove Old Card Images Failed",
@@ -1568,7 +1586,7 @@ class ActionsWidget(QGroupBox):
                 )
                 return
 
-            self.window().refresh(print_dict, img_dict)
+            self.window().refresh(state, img_dict)
             QMessageBox.information(
                 self,
                 "Old Card Images Removed",
@@ -1594,6 +1612,7 @@ class ActionsWidget(QGroupBox):
 class PrintOptionsWidget(QGroupBox):
     def __init__(self, print_dict, img_dict):
         super().__init__()
+        state = as_project_state(print_dict)
 
         self.setTitle("PDF Settings")
 
@@ -1602,15 +1621,15 @@ class PrintOptionsWidget(QGroupBox):
         )
         description.setWordWrap(True)
 
-        print_output = LineEditWithLabel("PDF &Name", print_dict["filename"])
+        print_output = LineEditWithLabel("PDF &Name", state.filename)
         paper_size = ComboBoxWithLabel(
-            "&Paper Size", list(page_sizes.keys()), print_dict["pagesize"]
+            "&Paper Size", list(page_sizes.keys()), state.pagesize
         )
         orientation = ComboBoxWithLabel(
-            "&Orientation", ["Landscape", "Portrait"], print_dict["orient"]
+            "&Orientation", ["Landscape", "Portrait"], state.orient
         )
         guides_checkbox = QCheckBox("Extended Guides")
-        guides_checkbox.setChecked(print_dict["extended_guides"])
+        guides_checkbox.setChecked(state.extended_guides)
 
         layout = QVBoxLayout()
         layout.addWidget(description)
@@ -1622,19 +1641,19 @@ class PrintOptionsWidget(QGroupBox):
         self.setLayout(layout)
 
         def change_output(t):
-            print_dict["filename"] = t
+            state.filename = t
 
         def change_papersize(t):
-            print_dict["pagesize"] = t
-            self.window().refresh_preview(print_dict, img_dict)
+            state.pagesize = t
+            self.window().refresh_preview(state, img_dict)
 
         def change_orientation(t):
-            print_dict["orient"] = t
-            self.window().refresh_preview(print_dict, img_dict)
+            state.orient = t
+            self.window().refresh_preview(state, img_dict)
 
         def change_guides(s):
             enabled = s == QtCore.Qt.CheckState.Checked
-            print_dict["extended_guides"] = enabled
+            state.extended_guides = enabled
 
         print_output._widget.textChanged.connect(change_output)
         paper_size._widget.currentTextChanged.connect(change_papersize)
@@ -1647,10 +1666,11 @@ class PrintOptionsWidget(QGroupBox):
         self._guides_checkbox = guides_checkbox
 
     def refresh_widgets(self, print_dict):
-        self._print_output.setText(print_dict["filename"])
-        self._paper_size.setCurrentText(print_dict["pagesize"])
-        self._orientation.setCurrentText(print_dict["orient"])
-        self._guides_checkbox.setChecked(print_dict["extended_guides"])
+        state = as_project_state(print_dict)
+        self._print_output.setText(state.filename)
+        self._paper_size.setCurrentText(state.pagesize)
+        self._orientation.setCurrentText(state.orient)
+        self._guides_checkbox.setChecked(state.extended_guides)
 
 
 class BacksidePreview(QWidget):
@@ -1692,6 +1712,7 @@ class BacksidePreview(QWidget):
 class CardOptionsWidget(QGroupBox):
     def __init__(self, print_dict, img_dict):
         super().__init__()
+        state = as_project_state(print_dict)
 
         self.setTitle("Card Settings")
 
@@ -1710,14 +1731,14 @@ class CardOptionsWidget(QGroupBox):
         bleed_edge_spin.setRange(0, inch_to_mm(0.12))
         bleed_edge_spin.setSingleStep(0.1)
         bleed_edge_spin.setSuffix("mm")
-        bleed_edge_spin.setValue(float(print_dict["bleed_edge"]))
+        bleed_edge_spin.setValue(float(state.bleed_edge))
         bleed_edge = WidgetWithLabel("&Bleed Edge", bleed_edge_spin)
 
         bleed_back_divider = QFrame()
         bleed_back_divider.setFrameShape(QFrame.Shape.HLine)
         bleed_back_divider.setFrameShadow(QFrame.Shadow.Sunken)
 
-        backside_enabled = print_dict["backside_enabled"]
+        backside_enabled = state.backside_enabled
         backside_checkbox = QCheckBox("Print Card Backs")
         backside_checkbox.setChecked(backside_enabled)
         backside_checkbox.setToolTip(
@@ -1726,7 +1747,7 @@ class CardOptionsWidget(QGroupBox):
 
         backside_default_button = QPushButton("Choose Default Back")
         backside_default_preview = BacksidePreview(
-            print_dict["backside_default"], img_dict
+            state.backside_default, img_dict
         )
         backside_default_button.setToolTip(
             "Choose the back image used for cards that do not have a custom back."
@@ -1737,7 +1758,7 @@ class CardOptionsWidget(QGroupBox):
         backside_offset_spin.setRange(-inch_to_mm(0.3), inch_to_mm(0.3))
         backside_offset_spin.setSingleStep(0.1)
         backside_offset_spin.setSuffix("mm")
-        backside_offset_spin.setValue(float(print_dict["backside_offset"]))
+        backside_offset_spin.setValue(float(state.backside_offset))
         backside_offset = WidgetWithLabel("Back &Offset", backside_offset_spin)
         backside_offset.setToolTip(
             "Adjust this only if front and back pages print slightly misaligned."
@@ -1751,7 +1772,7 @@ class CardOptionsWidget(QGroupBox):
         back_over_divider.setFrameShape(QFrame.Shape.HLine)
         back_over_divider.setFrameShadow(QFrame.Shadow.Sunken)
 
-        oversized_enabled = print_dict["oversized_enabled"]
+        oversized_enabled = state.oversized_enabled
         oversized_checkbox = QCheckBox("Allow Oversized Cards")
         oversized_checkbox.setChecked(oversized_enabled)
         oversized_checkbox.setToolTip(
@@ -1777,34 +1798,34 @@ class CardOptionsWidget(QGroupBox):
         self.setLayout(layout)
 
         def change_bleed_edge(v):
-            print_dict["bleed_edge"] = v
-            self.window().refresh_preview(print_dict, img_dict)
+            state.bleed_edge = v
+            self.window().refresh_preview(state, img_dict)
 
         def switch_backside_enabled(s):
             enabled = s == QtCore.Qt.CheckState.Checked
-            print_dict["backside_enabled"] = enabled
+            state.backside_enabled = enabled
             backside_default_button.setEnabled(enabled)
             backside_offset.setEnabled(enabled)
             backside_default_preview.setEnabled(enabled)
-            self.window().refresh(print_dict, img_dict)
+            self.window().refresh(state, img_dict)
 
         def pick_backside():
-            default_backside_choice = image_file_dialog(self, print_dict["image_dir"])
+            default_backside_choice = image_file_dialog(self, state.image_dir)
             if default_backside_choice is not None:
-                print_dict["backside_default"] = default_backside_choice
+                state.backside_default = default_backside_choice
                 backside_default_preview.refresh(
-                    print_dict["backside_default"], img_dict
+                    state.backside_default, img_dict
                 )
-                self.window().refresh(print_dict, img_dict)
+                self.window().refresh(state, img_dict)
 
         def change_backside_offset(v):
-            print_dict["backside_offset"] = v
-            self.window().refresh_preview(print_dict, img_dict)
+            state.backside_offset = v
+            self.window().refresh_preview(state, img_dict)
 
         def switch_oversized_enabled(s):
             enabled = s == QtCore.Qt.CheckState.Checked
-            print_dict["oversized_enabled"] = enabled
-            self.window().refresh(print_dict, img_dict)
+            state.oversized_enabled = enabled
+            self.window().refresh(state, img_dict)
 
         bleed_edge_spin.valueChanged.connect(change_bleed_edge)
         backside_checkbox.checkStateChanged.connect(switch_backside_enabled)
@@ -1819,18 +1840,21 @@ class CardOptionsWidget(QGroupBox):
         self._oversized_checkbox = oversized_checkbox
 
     def refresh_widgets(self, print_dict):
-        self._bleed_edge_spin.setValue(float(print_dict["bleed_edge"]))
-        self._backside_checkbox.setChecked(print_dict["backside_enabled"])
-        self._backside_offset_spin.setValue(float(print_dict["backside_offset"]))
-        self._oversized_checkbox.setChecked(print_dict["oversized_enabled"])
+        state = as_project_state(print_dict)
+        self._bleed_edge_spin.setValue(float(state.bleed_edge))
+        self._backside_checkbox.setChecked(state.backside_enabled)
+        self._backside_offset_spin.setValue(float(state.backside_offset))
+        self._oversized_checkbox.setChecked(state.oversized_enabled)
 
     def refresh(self, print_dict, img_dict):
-        self._backside_default_preview.refresh(print_dict["backside_default"], img_dict)
+        state = as_project_state(print_dict)
+        self._backside_default_preview.refresh(state.backside_default, img_dict)
 
 
 class GlobalOptionsWidget(QGroupBox):
     def __init__(self, print_dict, img_dict):
         super().__init__()
+        state = as_project_state(print_dict)
 
         self.setTitle("App Settings")
 
@@ -1864,12 +1888,12 @@ class GlobalOptionsWidget(QGroupBox):
 
             dialog.apply()
             if prior_values["DisplayColumns"] != CFG.DisplayColumns:
-                self.window().refresh(print_dict, img_dict)
+                self.window().refresh(state, img_dict)
             elif (
                 prior_values["VibranceBump"] != CFG.VibranceBump
                 or prior_values["DefaultPageSize"] != CFG.DefaultPageSize
             ):
-                self.window().refresh_preview(print_dict, img_dict)
+                self.window().refresh_preview(state, img_dict)
 
         open_settings_button.clicked.connect(open_settings)
 
@@ -1882,16 +1906,17 @@ class OptionsWidget(QWidget):
         img_dict,
     ):
         super().__init__()
+        state = as_project_state(print_dict)
 
         workflow_guide = WorkflowGuideWidget()
         actions_widget = ActionsWidget(
             application,
-            print_dict,
+            state,
             img_dict,
         )
-        print_options = PrintOptionsWidget(print_dict, img_dict)
-        card_options = CardOptionsWidget(print_dict, img_dict)
-        global_options = GlobalOptionsWidget(print_dict, img_dict)
+        print_options = PrintOptionsWidget(state, img_dict)
+        card_options = CardOptionsWidget(state, img_dict)
+        global_options = GlobalOptionsWidget(state, img_dict)
 
         layout = QVBoxLayout()
         layout.addWidget(workflow_guide)
@@ -1918,13 +1943,14 @@ class OptionsWidget(QWidget):
 class CardTabs(QTabWidget):
     def __init__(self, print_dict, img_dict, scroll_area, print_preview):
         super().__init__()
+        state = as_project_state(print_dict)
 
         self.addTab(scroll_area, "Cards")
         self.addTab(print_preview, "Preview")
 
         def current_changed(i):
             if i == 1:
-                print_preview.refresh(print_dict, img_dict)
+                print_preview.refresh(state, img_dict)
 
         self.currentChanged.connect(current_changed)
 

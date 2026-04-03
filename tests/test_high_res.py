@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 
 import high_res
@@ -480,11 +481,24 @@ def test_download_high_res_image_falls_back_to_drive_identifier():
     result = high_res.download_high_res_image(
         "drive123",
         "https://download/opt.png",
-        fetch_bytes=lambda _url: (_ for _ in ()).throw(RuntimeError("boom")),
+        fetch_bytes=lambda _url: (_ for _ in ()).throw(OSError("boom")),
         fetch_text=lambda _url: base64.b64encode(expected).decode("ascii"),
     )
 
     assert result == expected
+
+
+def test_download_high_res_image_logs_direct_download_failure(caplog):
+    with caplog.at_level(logging.WARNING):
+        result = high_res.download_high_res_image(
+            "drive123",
+            "https://download/opt.png",
+            fetch_bytes=lambda _url: (_ for _ in ()).throw(OSError("boom")),
+            fetch_text=lambda _url: VALID_PNG_BASE64,
+        )
+
+    assert result == VALID_PNG_BYTES
+    assert "operation=direct_download" in caplog.text
 
 
 def test_download_high_res_image_falls_back_when_direct_payload_is_not_an_image():

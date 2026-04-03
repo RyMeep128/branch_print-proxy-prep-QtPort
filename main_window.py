@@ -58,12 +58,8 @@ from PyQt6.QtWidgets import (
     QInputDialog,
 )
 
-import pdf
 import image
-import project
 import project_library
-import deck_import
-import high_res
 from config import CFG, save_config
 from constants import (
     card_ratio,
@@ -72,6 +68,7 @@ from constants import (
     low_dpi_warning_threshold,
     page_sizes,
 )
+from models import ProjectState
 from util import inch_to_mm, mm_to_inch, open_folder, point_to_inch, resource_path
 import fallback_image as fallback
 from background_tasks import HighResThumbnailLoader, make_popup_print_fn, popup
@@ -95,6 +92,7 @@ from services import deck_import_service, high_res_service, pdf_service, project
 logger = logging.getLogger(__name__)
 
 _showing_exception_dialog = False
+RECOVERABLE_EDITOR_LOAD_ERRORS = (OSError, ValueError, TypeError, json.JSONDecodeError)
 
 
 def install_exception_handlers():
@@ -196,9 +194,9 @@ class PrintProxyPrepApplication(QApplication):
         if hasattr(self, "_window"):
             self._window.import_and_open_project(path)
 
-    def save_active_project(self, print_dict):
+    def save_active_project(self, state):
         if hasattr(self, "_window"):
-            return self._window.save_active_project(print_dict)
+            return self._window.save_active_project(state)
         return None
 
     def set_project_thumbnail(self, card_name):
@@ -287,12 +285,12 @@ class AppShellWindow(QMainWindow):
         name = self._active_session.get("display_name") or "Untitled Project"
         self.setWindowTitle(f"PDF Proxy Printer - {name}")
 
-    def _build_editor_page(self, print_dict, img_dict):
-        card_grid = CardGrid(print_dict, img_dict)
-        scroll_area = CardScrollArea(print_dict, card_grid)
-        print_preview = PrintPreview(print_dict, img_dict)
-        tabs = CardTabs(print_dict, img_dict, scroll_area, print_preview)
-        options = OptionsWidget(self._application, print_dict, img_dict)
+    def _build_editor_page(self, state, img_dict):
+        card_grid = CardGrid(state, img_dict)
+        scroll_area = CardScrollArea(state, card_grid)
+        print_preview = PrintPreview(state, img_dict)
+        tabs = CardTabs(state, img_dict, scroll_area, print_preview)
+        options = OptionsWidget(self._application, state, img_dict)
         options_scroll_area = QScrollArea()
         options_scroll_area.setWidgetResizable(True)
         options_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
@@ -310,8 +308,13 @@ class AppShellWindow(QMainWindow):
             nonlocal error, result
             try:
                 result = load_fn()
-            except Exception as exc:
-                logger.exception("editor state load failed title=%s", loader_title)
+            except RECOVERABLE_EDITOR_LOAD_ERRORS as exc:
+                logger.warning(
+                    "editor state load failed operation=load_editor_state title=%s project_path=%s error=%s",
+                    loader_title,
+                    self.current_project_path(),
+                    exc,
+                )
                 error = exc
 
         loading_window = popup(self, loader_title, self._application._debug_mode)
@@ -356,7 +359,7 @@ class AppShellWindow(QMainWindow):
             return True
 
         if self._active_session.get("managed"):
-            self.save_active_project(self._active_session["print_dict"])
+            self.save_active_project(self._active_session["state"])
         elif self._active_session.get("is_draft"):
             if not self._confirm_discard_draft():
                 return False
@@ -384,7 +387,7 @@ class AppShellWindow(QMainWindow):
     def _autosave_managed_session(self):
         if self._active_session is None or not self._active_session.get("managed"):
             return
-        self.save_active_project(self._active_session["print_dict"])
+        self.save_active_project(self._active_session["state"])
 
     def autosave_managed_session(self):
         self._autosave_managed_session()
@@ -398,33 +401,33 @@ class AppShellWindow(QMainWindow):
             return
 
         def build_blank():
-            print_dict = dict(draft_defaults)
+            state = ProjectState.from_dict(draft_defaults)
             img_dict = {}
-            project.init_dict(print_dict, img_dict, self._application.warn_nonfatal)
-            image_dir = print_dict["image_dir"]
+            project_service.init_dict(state, img_dict, self._application.warn_nonfatal)
+            image_dir = state.image_dir
             crop_dir = os.path.join(image_dir, "crop")
             if image.need_run_cropper(
-                image_dir, crop_dir, float(print_dict["bleed_edge"]), CFG.VibranceBump
+                image_dir, crop_dir, float(state.bleed_edge), CFG.VibranceBump
             ) or image.need_cache_previews(crop_dir, img_dict, image_dir):
-                project.init_images(
-                    print_dict,
+                project_service.init_images(
+                    state,
                     img_dict,
                     make_popup_print_fn(blank_window),
                 )
-            return print_dict, img_dict
+            return state, img_dict
 
         blank_window = popup(self, "Preparing editor...", self._application._debug_mode)
-        print_dict = dict(draft_defaults)
+        state = ProjectState.from_dict(draft_defaults)
         img_dict = {}
 
         def blank_work():
-            nonlocal print_dict, img_dict
-            print_dict, img_dict = build_blank()
+            nonlocal state, img_dict
+            state, img_dict = build_blank()
 
         blank_window.show_during_work(blank_work)
         del blank_window
 
-        editor_page = self._build_editor_page(print_dict, img_dict)
+        editor_page = self._build_editor_page(state, img_dict)
         self._set_active_editor(
             editor_page,
             {
@@ -434,7 +437,7 @@ class AppShellWindow(QMainWindow):
                 "managed": False,
                 "is_draft": True,
                 "thumbnail_card": None,
-                "print_dict": print_dict,
+                "state": state,
                 "img_dict": img_dict,
             },
         )
@@ -452,13 +455,13 @@ class AppShellWindow(QMainWindow):
             self._dashboard_page.refresh_projects()
             return
 
-        print_dict = {}
+        state = ProjectState()
         img_dict = {}
 
         def load_work():
             loaded = load_project_file(
                 self._application,
-                print_dict,
+                state,
                 img_dict,
                 project_entry["path"],
                 make_popup_print_fn(reload_window),
@@ -471,7 +474,7 @@ class AppShellWindow(QMainWindow):
         del reload_window
 
         project_library.touch_opened(project_id)
-        editor_page = self._build_editor_page(print_dict, img_dict)
+        editor_page = self._build_editor_page(state, img_dict)
         self._set_active_editor(
             editor_page,
             {
@@ -481,7 +484,7 @@ class AppShellWindow(QMainWindow):
                 "managed": True,
                 "is_draft": False,
                 "thumbnail_card": project_entry.get("thumbnail_card"),
-                "print_dict": print_dict,
+                "state": state,
                 "img_dict": img_dict,
             },
         )
@@ -492,12 +495,12 @@ class AppShellWindow(QMainWindow):
         project_entry = project_library.import_project(source_path)
         self.open_managed_project(project_entry["id"])
 
-    def save_active_project(self, print_dict):
+    def save_active_project(self, state):
         session = self._active_session
         if session is None:
             return None
         if session.get("managed") and session.get("project_id") is not None:
-            saved = project_library.save_project(session["project_id"], print_dict)
+            saved = project_library.save_project(session["project_id"], state)
             if saved is not None:
                 session["project_path"] = saved["path"]
                 session["display_name"] = saved["display_name"]
@@ -526,7 +529,7 @@ class AppShellWindow(QMainWindow):
 
         created = project_library.materialize_draft_project(
             display_name,
-            print_dict,
+            state,
             thumbnail_card=session.get("thumbnail_card"),
         )
         session["managed"] = True
@@ -566,17 +569,17 @@ class AppShellWindow(QMainWindow):
             project_library.clear_thumbnail_card(session["project_id"])
             self._dashboard_page.refresh_projects()
 
-    def refresh_widgets(self, print_dict):
+    def refresh_widgets(self, state):
         if self._editor_page is not None:
-            self._editor_page.refresh_widgets(print_dict)
+            self._editor_page.refresh_widgets(state)
 
-    def refresh(self, print_dict, img_dict):
+    def refresh(self, state, img_dict):
         if self._editor_page is not None:
-            self._editor_page.refresh(print_dict, img_dict)
+            self._editor_page.refresh(state, img_dict)
 
-    def refresh_preview(self, print_dict, img_dict):
+    def refresh_preview(self, state, img_dict):
         if self._editor_page is not None:
-            self._editor_page.refresh_preview(print_dict, img_dict)
+            self._editor_page.refresh_preview(state, img_dict)
 
 
 def window_setup(application):
