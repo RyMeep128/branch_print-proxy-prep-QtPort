@@ -270,8 +270,19 @@ def apply_imported_counts(print_dict: dict, imported_cards: list[ImportedCard]):
         print_dict["cards"][imported_card.filename] = imported_card.entry.count
 
 
+def apply_imported_metadata(print_dict: dict, imported_cards: list[ImportedCard]):
+    metadata = print_dict.setdefault("card_metadata", {})
+    for imported_card in imported_cards:
+        metadata[imported_card.filename] = {
+            "name": imported_card.entry.name,
+            "set_code": imported_card.entry.set_code,
+            "collector_number": imported_card.entry.collector_number,
+        }
+
+
 def apply_import_result(print_dict: dict, import_result: ImportResult):
     apply_imported_counts(print_dict, import_result.imported)
+    apply_imported_metadata(print_dict, import_result.imported)
     if import_result.backside_pairs:
         print_dict["backside_enabled"] = True
         for front_name, back_name in import_result.backside_pairs.items():

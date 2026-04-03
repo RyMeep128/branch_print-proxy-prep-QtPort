@@ -46,12 +46,16 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QTextEdit,
+    QListWidget,
+    QListWidgetItem,
+    QSpinBox,
 )
 
 import pdf
 import image
 import project
 import deck_import
+import high_res
 from util import *
 from config import *
 from constants import *
@@ -397,6 +401,335 @@ class LineEditWithLabel(WidgetWithLabel):
         super().__init__(label_text, text)
 
 
+class HighResPickerDialog(QDialog):
+    def __init__(self, parent, print_dict, img_dict, card_name):
+        super().__init__(parent)
+
+        self.setWindowTitle("High-Res Front Picker")
+        self.resize(960, 680)
+
+        self._print_dict = print_dict
+        self._img_dict = img_dict
+        self._card_name = card_name
+        self._context = high_res.build_card_context(card_name, print_dict)
+        self._candidates = []
+        self._thumbnail_cache = {}
+        self._preview_cache = {}
+        self._applied = False
+
+        info_text = QLabel(
+            f"Searching MPCFill for front-face replacements for "
+            f"`{self._context.display_name}`."
+        )
+        info_text.setWordWrap(True)
+
+        current_override = print_dict.get("high_res_front_overrides", {}).get(
+            card_name
+        )
+        current_source_text = "Current source: Scryfall import"
+        if current_override is not None:
+            current_source_text = (
+                f"Current source: {current_override.get('source_name', 'MPCFill')} "
+                f"[{current_override.get('dpi', '?')} DPI]"
+            )
+        self._current_source_label = QLabel(current_source_text)
+        self._current_source_label.setWordWrap(True)
+
+        min_dpi = QSpinBox()
+        min_dpi.setRange(0, 5000)
+        min_dpi.setSingleStep(50)
+        min_dpi.setValue(300)
+
+        max_dpi = QSpinBox()
+        max_dpi.setRange(0, 5000)
+        max_dpi.setSingleStep(50)
+        max_dpi.setValue(1500)
+
+        search_button = QPushButton("Search")
+        search_button.clicked.connect(self.refresh_results)
+
+        filters_layout = QHBoxLayout()
+        filters_layout.addWidget(WidgetWithLabel("Min DPI", min_dpi))
+        filters_layout.addWidget(WidgetWithLabel("Max DPI", max_dpi))
+        filters_layout.addWidget(search_button)
+        filters_layout.addStretch()
+
+        self._min_dpi = min_dpi
+        self._max_dpi = max_dpi
+
+        results_list = QListWidget()
+        results_list.setIconSize(QtCore.QSize(90, 126))
+        results_list.currentRowChanged.connect(self._handle_selection_changed)
+        results_list.itemDoubleClicked.connect(lambda _item: self.apply_selected())
+        self._results_list = results_list
+
+        preview_label = QLabel("Select a result to preview it here.")
+        preview_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        preview_label.setMinimumSize(300, 420)
+        preview_label.setFrameShape(QFrame.Shape.StyledPanel)
+        preview_label.setWordWrap(True)
+        self._preview_label = preview_label
+
+        details_label = QLabel("")
+        details_label.setWordWrap(True)
+        self._details_label = details_label
+
+        left_layout = QVBoxLayout()
+        left_layout.addWidget(QLabel("Matches"))
+        left_layout.addWidget(results_list)
+
+        right_layout = QVBoxLayout()
+        right_layout.addWidget(QLabel("Preview"))
+        right_layout.addWidget(preview_label)
+        right_layout.addWidget(details_label)
+        right_layout.addStretch()
+
+        content_layout = QHBoxLayout()
+        content_layout.addLayout(left_layout, 3)
+        content_layout.addLayout(right_layout, 2)
+
+        self._status_label = QLabel("")
+
+        apply_button = QPushButton("Apply")
+        apply_button.setEnabled(False)
+        apply_button.clicked.connect(self.apply_selected)
+        self._apply_button = apply_button
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        button_row.addWidget(apply_button)
+        button_row.addWidget(cancel_button)
+
+        layout = QVBoxLayout()
+        layout.addWidget(info_text)
+        layout.addWidget(self._current_source_label)
+        layout.addLayout(filters_layout)
+        layout.addWidget(self._status_label)
+        layout.addLayout(content_layout)
+        layout.addLayout(button_row)
+        self.setLayout(layout)
+        if CFG.HighResBackendURL.strip():
+            self._status_label.setText(
+                "Set your DPI filters and click Search to load MPCFill results."
+            )
+        else:
+            self._status_label.setText(
+                "Set `HighRes.BackendURL` in config.ini to the MPCFill base URL, "
+                "then reopen the app."
+            )
+
+    def was_applied(self):
+        return self._applied
+
+    def _warn(self, title, message):
+        application = QApplication.instance()
+        if application is not None and hasattr(application, "warn_nonfatal"):
+            application.warn_nonfatal(title, message)
+        else:
+            QMessageBox.warning(self, title, message)
+
+    def _run_with_popup(self, title, work):
+        application = QApplication.instance()
+        debug_mode = getattr(application, "_debug_mode", False)
+        window = self.window() if self.window() is not None else self
+        loading_window = popup(window, title, debug_mode)
+        loading_window.show_during_work(work)
+        del loading_window
+
+    def refresh_results(self):
+        if not CFG.HighResBackendURL.strip():
+            self._warn(
+                "High-Res Backend Not Configured",
+                "Set `HighRes.BackendURL` in config.ini to the MPCFill base URL, "
+                "such as `https://mpcfill.com/`, then reopen the app.",
+            )
+            self._status_label.setText(
+                "High-res search is disabled until a backend URL is configured."
+            )
+            return
+
+        min_dpi = self._min_dpi.value()
+        max_dpi = self._max_dpi.value()
+        if min_dpi > max_dpi:
+            max_dpi = min_dpi
+            self._max_dpi.setValue(max_dpi)
+
+        results = []
+        thumbnail_cache = {}
+        error = None
+
+        def do_search():
+            nonlocal results, thumbnail_cache, error
+            try:
+                results = high_res.search_high_res_candidates(
+                    self._context,
+                    CFG.HighResBackendURL,
+                    min_dpi,
+                    max_dpi,
+                )
+                for candidate in results:
+                    if candidate.small_thumbnail_url:
+                        try:
+                            thumbnail_cache[candidate.identifier] = high_res.fetch_preview_bytes(
+                                candidate.small_thumbnail_url
+                            )
+                        except Exception:
+                            continue
+            except Exception as exc:
+                error = exc
+
+        self._run_with_popup("Searching MPCFill...", do_search)
+
+        if error is not None:
+            self._warn("High-Res Search Failed", str(error))
+            self._status_label.setText("Search failed. Check the warning for details.")
+            return
+
+        self._candidates = results
+        self._thumbnail_cache.update(thumbnail_cache)
+        self._results_list.clear()
+        self._apply_button.setEnabled(False)
+        self._preview_label.setText("Select a result to preview it here.")
+        self._preview_label.setPixmap(QPixmap())
+        self._details_label.setText("")
+
+        if not results:
+            self._status_label.setText("No high-res matches found for this card.")
+            return
+
+        self._status_label.setText(f"Found {len(results)} high-res options.")
+        for candidate in results:
+            item = QListWidgetItem(
+                f"{candidate.name}\n{candidate.source_name} | {candidate.dpi} DPI"
+            )
+            thumb_bytes = self._thumbnail_cache.get(candidate.identifier)
+            if thumb_bytes:
+                pixmap = QPixmap()
+                pixmap.loadFromData(thumb_bytes)
+                item.setIcon(QIcon(pixmap))
+            self._results_list.addItem(item)
+
+        self._results_list.setCurrentRow(0)
+
+    def _selected_candidate(self, row=None):
+        if row is None:
+            row = self._results_list.currentRow()
+        if row < 0 or row >= len(self._candidates):
+            return None
+        return self._candidates[row]
+
+    def _handle_selection_changed(self, row):
+        candidate = self._selected_candidate(row)
+        if candidate is None:
+            self._apply_button.setEnabled(False)
+            self._details_label.setText("")
+            return
+
+        self._apply_button.setEnabled(True)
+        self._details_label.setText(
+            f"{candidate.name}\n{candidate.source_name}\n"
+            f"{candidate.dpi} DPI\nSource ID: {candidate.source_id}\n"
+            f"ID: {candidate.identifier}"
+        )
+        self._update_preview(candidate)
+
+    def _update_preview(self, candidate):
+        if candidate.identifier not in self._preview_cache:
+            error = None
+            preview_bytes = None
+
+            def load_preview():
+                nonlocal preview_bytes, error
+                try:
+                    url = candidate.medium_thumbnail_url or candidate.small_thumbnail_url
+                    if not url:
+                        preview_bytes = None
+                        return
+                    preview_bytes = high_res.fetch_preview_bytes(url)
+                except Exception as exc:
+                    error = exc
+
+            self._run_with_popup("Loading preview...", load_preview)
+            if error is not None:
+                self._warn("Preview Load Failed", str(error))
+                return
+            if preview_bytes is not None:
+                self._preview_cache[candidate.identifier] = preview_bytes
+
+        preview_bytes = self._preview_cache.get(candidate.identifier)
+        if preview_bytes is None:
+            self._preview_label.setText("Preview unavailable.")
+            self._preview_label.setPixmap(QPixmap())
+            return
+
+        pixmap = QPixmap()
+        pixmap.loadFromData(preview_bytes)
+        scaled = pixmap.scaled(
+            self._preview_label.size(),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        self._preview_label.setPixmap(scaled)
+        self._preview_label.setText("")
+
+    def apply_selected(self):
+        candidate = self._selected_candidate()
+        if candidate is None:
+            return
+
+        application = QApplication.instance()
+        error = None
+        backside_match = None
+
+        def do_apply():
+            nonlocal error, backside_match
+            try:
+                backside_match = high_res.maybe_find_matching_backside(
+                    self._print_dict,
+                    self._card_name,
+                    self._context,
+                    candidate,
+                    CFG.HighResBackendURL,
+                )
+                high_res.apply_high_res_candidate(
+                    self._print_dict,
+                    self._print_dict["image_dir"],
+                    self._card_name,
+                    candidate,
+                    backside_match=backside_match,
+                )
+                project.refresh_after_image_changes(
+                    self._print_dict,
+                    self._img_dict,
+                    make_popup_print_fn(apply_window),
+                    getattr(application, "warn_nonfatal", None),
+                )
+            except Exception as exc:
+                error = exc
+
+        apply_window = popup(
+            self.window() if self.window() is not None else self,
+            "Applying high-res image...",
+            getattr(application, "_debug_mode", False),
+        )
+        apply_window.show_during_work(do_apply)
+        del apply_window
+
+        if error is not None:
+            self._warn("High-Res Apply Failed", str(error))
+            return
+
+        self._applied = True
+        self._current_source_label.setText(
+            f"Current source: {candidate.source_name} [{candidate.dpi} DPI]"
+            + (" | front + back applied" if backside_match is not None else "")
+        )
+        self.accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, tabs, scroll_area, options_container, options, print_preview):
         super().__init__()
@@ -445,6 +778,8 @@ class MainWindow(QMainWindow):
 
 
 class CardImage(QLabel):
+    clicked = QtCore.pyqtSignal()
+
     def __init__(self, img_data, img_size, round_corners=True, rotation=False):
         super().__init__()
 
@@ -507,6 +842,11 @@ class CardImage(QLabel):
             return int(width * card_ratio)
         else:
             return int(width / card_ratio)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.clicked.emit()
 
 
 class BacksideImage(CardImage):
@@ -640,6 +980,15 @@ class CardWidget(QWidget):
             img_data = fallback.data
             img_size = fallback.size
         img = CardImage(img_data, img_size)
+        img.setToolTip("Click to browse high-res MPC alternatives")
+
+        def open_high_res_picker():
+            dialog = HighResPickerDialog(self, print_dict, img_dict, card_name)
+            if dialog.exec() == QDialog.DialogCode.Accepted and dialog.was_applied():
+                self.window().refresh(print_dict, img_dict)
+
+        if card_name is not None:
+            img.clicked.connect(open_high_res_picker)
 
         backside_enabled = print_dict["backside_enabled"]
         oversized_enabled = print_dict["oversized_enabled"]

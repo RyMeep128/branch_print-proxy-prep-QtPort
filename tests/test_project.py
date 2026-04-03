@@ -48,6 +48,46 @@ def test_init_dict_adds_defaults_and_removes_stale_entries(monkeypatch, tmp_path
     assert img_dict == {"cached.png": {"size": [1, 2], "thumb": {}, "uncropped": {}}}
 
 
+def test_init_dict_keeps_cards_with_source_files_even_if_crop_is_missing(monkeypatch, tmp_path):
+    image_dir = tmp_path / "images"
+    crop_dir = image_dir / "crop"
+
+    def fake_list_image_files(folder):
+        if folder == str(crop_dir):
+            return []
+        if folder == str(image_dir):
+            return [
+                "scryfall_mid_1_delver-of-secrets.png",
+                "__scryfall_mid_1_insectile-aberration.png",
+            ]
+        return []
+
+    monkeypatch.setattr(project.image, "init_image_folder", lambda *_args: None)
+    monkeypatch.setattr(project.image, "list_image_files", fake_list_image_files)
+
+    print_dict = {
+        "image_dir": str(image_dir),
+        "img_cache": str(tmp_path / "img.cache"),
+        "cards": {
+            "scryfall_mid_1_delver-of-secrets.png": 1,
+            "__scryfall_mid_1_insectile-aberration.png": 0,
+        },
+        "backsides": {
+            "scryfall_mid_1_delver-of-secrets.png": "__scryfall_mid_1_insectile-aberration.png"
+        },
+        "bleed_edge": "0",
+    }
+    img_dict = {}
+
+    project.init_dict(print_dict, img_dict)
+
+    assert print_dict["cards"]["scryfall_mid_1_delver-of-secrets.png"] == 1
+    assert print_dict["cards"]["__scryfall_mid_1_insectile-aberration.png"] == 0
+    assert print_dict["backsides"] == {
+        "scryfall_mid_1_delver-of-secrets.png": "__scryfall_mid_1_insectile-aberration.png"
+    }
+
+
 def test_load_resets_invalid_project_file_and_initializes_images(
     monkeypatch, tmp_path
 ):

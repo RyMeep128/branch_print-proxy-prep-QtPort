@@ -338,3 +338,10 @@ def test_apply_import_result_sets_backsides_and_enables_backside_mode():
         "scryfall_mom_239_invasion-of-new-phyrexia.png": "__scryfall_mom_239_teferi-akosa-of-zhalfir.png"
     }
     assert print_dict["backside_enabled"] is True
+    assert print_dict["card_metadata"] == {
+        "scryfall_mom_239_invasion-of-new-phyrexia.png": {
+            "name": "Invasion of New Phyrexia",
+            "set_code": None,
+            "collector_number": None,
+        }
+    }

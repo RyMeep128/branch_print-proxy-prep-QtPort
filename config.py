@@ -10,6 +10,7 @@ class GlobalConfig:
         self.DefaultPageSize = "Letter"
         self.EnableUncrop = True
         self.DisplayColumns = 5
+        self.HighResBackendURL = "https://mpcfill.com/"
 
 
 def load_config() -> GlobalConfig:
@@ -24,6 +25,9 @@ def load_config() -> GlobalConfig:
         parsed_config.DefaultPageSize = def_cfg.get("Page.Size", "Letter")
         parsed_config.EnableUncrop = def_cfg.getboolean("Enable.Uncrop", True)
         parsed_config.DisplayColumns = def_cfg.getint("Display.Columns", 5)
+        parsed_config.HighResBackendURL = def_cfg.get(
+            "HighRes.BackendURL", "https://mpcfill.com/"
+        )
 
     return parsed_config
 
@@ -39,6 +43,7 @@ def save_config(cfg):
     def_cfg["Page.Size"] = cfg.DefaultPageSize
     def_cfg["Enable.Uncrop"] = str(cfg.EnableUncrop)
     def_cfg["Display.Columns"] = str(cfg.DisplayColumns)
+    def_cfg["HighRes.BackendURL"] = cfg.HighResBackendURL
 
     with open(cfg_path, "w") as configfile:
         config_parser.write(configfile)

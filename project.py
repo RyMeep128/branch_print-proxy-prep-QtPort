@@ -25,6 +25,9 @@ def init_dict(print_dict, img_dict, warn_fn=None):
         # oversized options
         "oversized_enabled": False,
         "oversized": {},
+        # metadata
+        "card_metadata": {},
+        "high_res_front_overrides": {},
         # pdf generation options
         "pagesize": (
             default_page_size if default_page_size in page_sizes else "Letter"
@@ -47,6 +50,7 @@ def init_dict(print_dict, img_dict, warn_fn=None):
 
     # Get all image files in the crop directory
     crop_list = image.list_image_files(crop_dir)
+    source_list = image.list_image_files(image_dir)
 
     # Check that we have all our cards accounted for
     for img in crop_list:
@@ -56,7 +60,7 @@ def init_dict(print_dict, img_dict, warn_fn=None):
     # And also check we don't have stale cards in here
     stale_images = []
     for img in print_dict["cards"].keys():
-        if img not in crop_list:
+        if img not in crop_list and img not in source_list:
             stale_images.append(img)
     for img in stale_images:
         del print_dict["cards"][img]
@@ -66,6 +70,10 @@ def init_dict(print_dict, img_dict, warn_fn=None):
             del print_dict["backside_short_edge"][img]
         if img in print_dict["oversized"]:
             del print_dict["oversized"][img]
+        if img in print_dict["card_metadata"]:
+            del print_dict["card_metadata"][img]
+        if img in print_dict["high_res_front_overrides"]:
+            del print_dict["high_res_front_overrides"][img]
 
     # Make sure we have a sensible bleed edge
     bleed_edge = str(print_dict["bleed_edge"])
