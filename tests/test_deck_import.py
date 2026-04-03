@@ -112,6 +112,7 @@ def test_import_decklist_downloads_images_and_applies_counts(tmp_path):
 
     assert result.unmatched_lines == []
     assert result.failed_cards == []
+    assert result.backside_pairs == {}
     assert [card.filename for card in result.imported] == [
         "scryfall_clu_141_lightning-bolt.png"
     ]
@@ -144,6 +145,7 @@ def test_import_decklist_reports_partial_failures(tmp_path):
         "scryfall_clu_141_lightning-bolt.png"
     ]
     assert result.failed_cards == ["Missing Card"]
+    assert result.backside_pairs == {}
 
 
 def test_import_decklist_csv_uses_exact_printing_endpoint(tmp_path):
@@ -168,6 +170,7 @@ def test_import_decklist_csv_uses_exact_printing_endpoint(tmp_path):
     assert seen_urls == ["https://api.scryfall.com/cards/moc/166"]
     assert result.unmatched_lines == []
     assert result.failed_cards == []
+    assert result.backside_pairs == {}
     assert [card.filename for card in result.imported] == [
         "scryfall_moc_166_acclaimed-contender.png"
     ]
@@ -256,6 +259,7 @@ def test_import_archidekt_url_uses_exact_printing_endpoints(tmp_path):
     ]
     assert result.unmatched_lines == []
     assert result.failed_cards == []
+    assert result.backside_pairs == {}
     assert result.imported_count == 3
 
 
@@ -266,3 +270,71 @@ def test_import_archidekt_url_rejects_invalid_url(tmp_path):
         assert "not a valid public Archidekt deck link" in str(exc)
     else:
         raise AssertionError("Expected import_archidekt_url to fail")
+
+
+def test_import_decklist_downloads_double_faced_card_and_assigns_backside(tmp_path):
+    def fake_fetch_json(url):
+        assert "named" in url
+        return {
+            "name": "Invasion of New Phyrexia // Teferi Akosa of Zhalfir",
+            "set": "mom",
+            "collector_number": "239",
+            "card_faces": [
+                {
+                    "name": "Invasion of New Phyrexia",
+                    "image_uris": {"png": "https://img/front.png"},
+                },
+                {
+                    "name": "Teferi Akosa of Zhalfir",
+                    "image_uris": {"png": "https://img/back.png"},
+                },
+            ],
+        }
+
+    result = deck_import.import_decklist(
+        "1 Invasion of New Phyrexia\n",
+        str(tmp_path),
+        fetch_json=fake_fetch_json,
+        fetch_bytes=lambda url: url.encode("utf-8"),
+    )
+
+    assert result.failed_cards == []
+    assert [card.filename for card in result.imported] == [
+        "scryfall_mom_239_invasion-of-new-phyrexia.png"
+    ]
+    assert result.backside_pairs == {
+        "scryfall_mom_239_invasion-of-new-phyrexia.png": "__scryfall_mom_239_teferi-akosa-of-zhalfir.png"
+    }
+    assert (tmp_path / "scryfall_mom_239_invasion-of-new-phyrexia.png").read_bytes() == b"https://img/front.png"
+    assert (tmp_path / "__scryfall_mom_239_teferi-akosa-of-zhalfir.png").read_bytes() == b"https://img/back.png"
+
+
+def test_apply_import_result_sets_backsides_and_enables_backside_mode():
+    result = deck_import.ImportResult(
+        imported=[
+            deck_import.ImportedCard(
+                entry=deck_import.DeckEntry(count=2, name="Invasion of New Phyrexia"),
+                filename="scryfall_mom_239_invasion-of-new-phyrexia.png",
+            )
+        ],
+        unmatched_lines=[],
+        failed_cards=[],
+        backside_pairs={
+            "scryfall_mom_239_invasion-of-new-phyrexia.png": "__scryfall_mom_239_teferi-akosa-of-zhalfir.png"
+        },
+    )
+    print_dict = {
+        "cards": {},
+        "backsides": {},
+        "backside_enabled": False,
+    }
+
+    deck_import.apply_import_result(print_dict, result)
+
+    assert print_dict["cards"] == {
+        "scryfall_mom_239_invasion-of-new-phyrexia.png": 2
+    }
+    assert print_dict["backsides"] == {
+        "scryfall_mom_239_invasion-of-new-phyrexia.png": "__scryfall_mom_239_teferi-akosa-of-zhalfir.png"
+    }
+    assert print_dict["backside_enabled"] is True

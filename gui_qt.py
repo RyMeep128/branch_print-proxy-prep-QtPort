@@ -1570,9 +1570,7 @@ class ActionsWidget(QGroupBox):
                         make_popup_print_fn(import_window),
                         application.warn_nonfatal,
                     )
-                    deck_import.apply_imported_counts(
-                        print_dict, import_result.imported
-                    )
+                    deck_import.apply_import_result(print_dict, import_result)
 
             self.window().setEnabled(False)
             import_window = popup(

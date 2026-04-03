@@ -50,6 +50,7 @@ class ImportResult:
     imported: list[ImportedCard]
     unmatched_lines: list[str]
     failed_cards: list[str]
+    backside_pairs: dict[str, str]
 
     @property
     def imported_count(self) -> int:
@@ -236,21 +237,23 @@ def import_entries(
 
     imported: list[ImportedCard] = []
     failed_cards: list[str] = []
+    backside_pairs: dict[str, str] = {}
 
     for index, entry in enumerate(entries, start=1):
         label = f"{entry.name} ({index}/{len(entries)})"
         print_fn(f"Importing decklist...\nResolving {label}")
         try:
             card_data = resolve_card(entry, fetch_json)
-            image_url = extract_image_url(card_data)
-            if image_url is None:
-                raise ValueError("No downloadable image URL found")
-
-            filename = build_image_filename(card_data)
-            print_fn(f"Importing decklist...\nDownloading {label}")
-            image_bytes = fetch_bytes(image_url)
-            write_downloaded_image(image_dir, filename, image_bytes)
-            imported.append(ImportedCard(entry=entry, filename=filename))
+            imported_card, backside_name = download_card_image_set(
+                card_data,
+                entry,
+                image_dir,
+                print_fn,
+                fetch_bytes,
+            )
+            imported.append(imported_card)
+            if backside_name is not None:
+                backside_pairs[imported_card.filename] = backside_name
         except Exception:
             failed_cards.append(_format_failed_card(entry))
 
@@ -258,12 +261,21 @@ def import_entries(
         imported=imported,
         unmatched_lines=unmatched_lines,
         failed_cards=failed_cards,
+        backside_pairs=backside_pairs,
     )
 
 
 def apply_imported_counts(print_dict: dict, imported_cards: list[ImportedCard]):
     for imported_card in imported_cards:
         print_dict["cards"][imported_card.filename] = imported_card.entry.count
+
+
+def apply_import_result(print_dict: dict, import_result: ImportResult):
+    apply_imported_counts(print_dict, import_result.imported)
+    if import_result.backside_pairs:
+        print_dict["backside_enabled"] = True
+        for front_name, back_name in import_result.backside_pairs.items():
+            print_dict["backsides"][front_name] = back_name
 
 
 def read_decklist_file(path: str) -> str:
@@ -369,6 +381,18 @@ def extract_image_url(card_data: dict) -> str | None:
     return None
 
 
+def extract_face_image_urls(card_data: dict) -> list[str]:
+    urls = []
+    for face in card_data.get("card_faces", []):
+        image_uris = face.get("image_uris")
+        if not image_uris:
+            continue
+        url = image_uris.get("png") or image_uris.get("large") or image_uris.get("normal")
+        if url:
+            urls.append(url)
+    return urls
+
+
 def build_image_filename(card_data: dict) -> str:
     name = card_data.get("name", "card")
     if "//" in name:
@@ -378,6 +402,46 @@ def build_image_filename(card_data: dict) -> str:
     collector_number = str(card_data.get("collector_number") or "0")
     slug = slugify_filename(name)
     return f"scryfall_{set_code}_{collector_number}_{slug}.png"
+
+
+def build_face_image_filename(card_data: dict, face_name: str, hidden=False) -> str:
+    prefix = "__scryfall_" if hidden else "scryfall_"
+    set_code = (card_data.get("set") or "unknown").lower()
+    collector_number = str(card_data.get("collector_number") or "0")
+    slug = slugify_filename(face_name)
+    return f"{prefix}{set_code}_{collector_number}_{slug}.png"
+
+
+def download_card_image_set(
+    card_data: dict,
+    entry: DeckEntry,
+    image_dir: str,
+    print_fn: PRINT_FN,
+    fetch_bytes: Callable[[str], bytes],
+) -> tuple[ImportedCard, str | None]:
+    face_urls = extract_face_image_urls(card_data)
+    face_names = [face.get("name") or card_data.get("name", "card") for face in card_data.get("card_faces", [])]
+
+    if len(face_urls) >= 2 and len(face_names) >= 2:
+        front_name = build_face_image_filename(card_data, face_names[0], hidden=False)
+        back_name = build_face_image_filename(card_data, face_names[1], hidden=True)
+
+        print_fn(f"Importing decklist...\nDownloading {entry.name} front")
+        write_downloaded_image(image_dir, front_name, fetch_bytes(face_urls[0]))
+        print_fn(f"Importing decklist...\nDownloading {entry.name} back")
+        write_downloaded_image(image_dir, back_name, fetch_bytes(face_urls[1]))
+
+        return ImportedCard(entry=entry, filename=front_name), back_name
+
+    image_url = extract_image_url(card_data)
+    if image_url is None:
+        raise ValueError("No downloadable image URL found")
+
+    filename = build_image_filename(card_data)
+    print_fn(f"Importing decklist...\nDownloading {entry.name}")
+    image_bytes = fetch_bytes(image_url)
+    write_downloaded_image(image_dir, filename, image_bytes)
+    return ImportedCard(entry=entry, filename=filename), None
 
 
 def slugify_filename(value: str) -> str:
