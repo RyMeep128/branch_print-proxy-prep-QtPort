@@ -185,6 +185,317 @@ def test_search_high_res_page_returns_total_count():
     assert len(result.candidates) == 1
 
 
+def test_search_new_art_page_returns_scryfall_print_candidates():
+    calls = []
+
+    def fake_fetch_json(url, body=None, headers=None):
+        calls.append(url)
+        if url == "https://api.scryfall.com/cards/eld/59":
+            return {
+                "id": "current-print",
+                "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aabc&unique=prints",
+            }
+        return {
+            "object": "list",
+            "has_more": False,
+            "total_cards": 2,
+            "data": [
+                {
+                    "id": "print-1",
+                    "name": "Opt",
+                    "set": "eld",
+                    "set_name": "Throne of Eldraine",
+                    "collector_number": "59",
+                    "image_uris": {
+                        "small": "https://cards.scryfall.io/small/front/a/b/card1.jpg",
+                        "normal": "https://cards.scryfall.io/normal/front/a/b/card1.jpg",
+                        "large": "https://cards.scryfall.io/large/front/a/b/card1.jpg",
+                        "png": "https://cards.scryfall.io/png/front/a/b/card1.png",
+                    },
+                },
+                {
+                    "id": "print-2",
+                    "name": "Opt",
+                    "set": "sta",
+                    "set_name": "Strixhaven Mystical Archive",
+                    "collector_number": "19",
+                    "image_uris": {
+                        "small": "https://cards.scryfall.io/small/front/c/d/card2.jpg",
+                        "normal": "https://cards.scryfall.io/normal/front/c/d/card2.jpg",
+                        "large": "https://cards.scryfall.io/large/front/c/d/card2.jpg",
+                        "png": "https://cards.scryfall.io/png/front/c/d/card2.png",
+                    },
+                },
+            ],
+        }
+
+    context = high_res.CardContext(
+        filename="scryfall_eld_59_opt.png",
+        query="Opt",
+        display_name="Opt",
+        set_code="eld",
+        collector_number="59",
+    )
+    result = high_res.search_new_art_page(
+        context,
+        high_res.NEW_ART_SOURCE_SCRYFALL,
+        fetch_json=fake_fetch_json,
+    )
+
+    assert result.total_count == 2
+    assert [candidate.identifier for candidate in result.candidates] == ["print-1", "print-2"]
+    assert result.candidates[0].art_source == high_res.NEW_ART_SOURCE_SCRYFALL
+    assert result.candidates[0].download_link.endswith("card1.png")
+    assert result.candidates[0].set_name == "Throne of Eldraine"
+    assert result.candidates[1].set_code == "sta"
+    assert calls[0] == "https://api.scryfall.com/cards/eld/59"
+
+
+def test_search_new_art_page_filters_scryfall_by_set_code():
+    def fake_fetch_json(url, body=None, headers=None):
+        if url == "https://api.scryfall.com/cards/eld/59":
+            return {
+                "id": "current-print",
+                "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aabc&unique=prints",
+            }
+        return {
+            "object": "list",
+            "has_more": False,
+            "total_cards": 2,
+            "data": [
+                {
+                    "id": "print-1",
+                    "name": "Opt",
+                    "set": "eld",
+                    "set_name": "Throne of Eldraine",
+                    "collector_number": "59",
+                    "image_uris": {"png": "https://cards.scryfall.io/png/front/a/b/card1.png"},
+                },
+                {
+                    "id": "print-2",
+                    "name": "Opt",
+                    "set": "sta",
+                    "set_name": "Strixhaven Mystical Archive",
+                    "collector_number": "19",
+                    "image_uris": {"png": "https://cards.scryfall.io/png/front/c/d/card2.png"},
+                },
+            ],
+        }
+
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt", set_code="eld", collector_number="59")
+    result = high_res.search_new_art_page(
+        context,
+        high_res.NEW_ART_SOURCE_SCRYFALL,
+        set_filter="sta",
+        fetch_json=fake_fetch_json,
+    )
+
+    assert result.total_count == 1
+    assert [candidate.identifier for candidate in result.candidates] == ["print-2"]
+
+
+def test_search_new_art_page_filters_scryfall_by_set_name():
+    def fake_fetch_json(url, body=None, headers=None):
+        if url == "https://api.scryfall.com/cards/eld/59":
+            return {
+                "id": "current-print",
+                "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aabc&unique=prints",
+            }
+        return {
+            "object": "list",
+            "has_more": False,
+            "total_cards": 2,
+            "data": [
+                {
+                    "id": "print-1",
+                    "name": "Opt",
+                    "set": "eld",
+                    "set_name": "Throne of Eldraine",
+                    "collector_number": "59",
+                    "image_uris": {"png": "https://cards.scryfall.io/png/front/a/b/card1.png"},
+                },
+                {
+                    "id": "print-2",
+                    "name": "Opt",
+                    "set": "sta",
+                    "set_name": "Strixhaven Mystical Archive",
+                    "collector_number": "19",
+                    "image_uris": {"png": "https://cards.scryfall.io/png/front/c/d/card2.png"},
+                },
+            ],
+        }
+
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt", set_code="eld", collector_number="59")
+    result = high_res.search_new_art_page(
+        context,
+        high_res.NEW_ART_SOURCE_SCRYFALL,
+        set_filter="mystical",
+        fetch_json=fake_fetch_json,
+    )
+
+    assert result.total_count == 1
+    assert [candidate.identifier for candidate in result.candidates] == ["print-2"]
+
+
+def test_search_new_art_page_filtered_scryfall_pagination_fetches_additional_raw_pages():
+    calls = []
+
+    def fake_fetch_json(url, body=None, headers=None):
+        calls.append(url)
+        if url == "https://api.scryfall.com/cards/eld/59":
+            return {
+                "id": "current-print",
+                "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aabc&unique=prints",
+            }
+        if "next=2" in url:
+            return {
+                "object": "list",
+                "has_more": False,
+                "total_cards": 4,
+                "data": [
+                    {
+                        "id": "print-3",
+                        "name": "Opt",
+                        "set": "sta",
+                        "set_name": "Strixhaven Mystical Archive",
+                        "collector_number": "21",
+                        "image_uris": {"png": "https://cards.scryfall.io/png/front/e/f/card3.png"},
+                    },
+                    {
+                        "id": "print-4",
+                        "name": "Opt",
+                        "set": "sta",
+                        "set_name": "Strixhaven Mystical Archive",
+                        "collector_number": "22",
+                        "image_uris": {"png": "https://cards.scryfall.io/png/front/g/h/card4.png"},
+                    },
+                ],
+            }
+        return {
+            "object": "list",
+            "has_more": True,
+            "next_page": "https://api.scryfall.com/cards/search?next=2",
+            "total_cards": 4,
+            "data": [
+                {
+                    "id": "print-1",
+                    "name": "Opt",
+                    "set": "eld",
+                    "set_name": "Throne of Eldraine",
+                    "collector_number": "59",
+                    "image_uris": {"png": "https://cards.scryfall.io/png/front/a/b/card1.png"},
+                },
+                {
+                    "id": "print-2",
+                    "name": "Opt",
+                    "set": "eld",
+                    "set_name": "Throne of Eldraine",
+                    "collector_number": "60",
+                    "image_uris": {"png": "https://cards.scryfall.io/png/front/c/d/card2.png"},
+                },
+            ],
+        }
+
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt", set_code="eld", collector_number="59")
+    result = high_res.search_new_art_page(
+        context,
+        high_res.NEW_ART_SOURCE_SCRYFALL,
+        page_start=1,
+        page_size=1,
+        set_filter="mystical",
+        fetch_json=fake_fetch_json,
+    )
+
+    assert [candidate.identifier for candidate in result.candidates] == ["print-4"]
+    assert any("next=2" in url for url in calls)
+
+
+def test_search_new_art_page_name_mode_uses_manual_mpcfill_search_text():
+    calls = []
+
+    def fake_fetch_json(url, body=None, headers=None):
+        calls.append((url, body))
+        return {"cards": []}
+
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt")
+    high_res.search_new_art_page(
+        context,
+        high_res.NEW_ART_SOURCE_MPCFILL,
+        backend_url="https://example.com/",
+        min_dpi=300,
+        max_dpi=1200,
+        search_text="Island",
+        search_mode="name",
+        fetch_json=fake_fetch_json,
+    )
+
+    assert calls[0][1]["query"] == "Island"
+
+
+def test_search_new_art_page_name_mode_falls_back_to_context_name_for_blank_text():
+    calls = []
+
+    def fake_fetch_json(url, body=None, headers=None):
+        calls.append((url, body))
+        return {"cards": []}
+
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt")
+    high_res.search_new_art_page(
+        context,
+        high_res.NEW_ART_SOURCE_MPCFILL,
+        backend_url="https://example.com/",
+        min_dpi=300,
+        max_dpi=1200,
+        search_text="   ",
+        search_mode="name",
+        fetch_json=fake_fetch_json,
+    )
+
+    assert calls[0][1]["query"] == "Opt"
+
+
+def test_search_new_art_page_artist_mode_uses_manual_search_text():
+    calls = []
+
+    def fake_fetch_json(url, body=None, headers=None):
+        calls.append((url, body))
+        return {"cards": []}
+
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt")
+    high_res.search_new_art_page(
+        context,
+        high_res.NEW_ART_SOURCE_MPCFILL,
+        backend_url="https://example.com/",
+        min_dpi=300,
+        max_dpi=1200,
+        search_text="John Avon",
+        search_mode="artist",
+        fetch_json=fake_fetch_json,
+    )
+
+    assert calls[0][1]["query"] == "John Avon"
+
+
+def test_search_new_art_page_artist_mode_requires_search_text():
+    context = high_res.CardContext(filename="x.png", query="Opt", display_name="Opt")
+
+    try:
+        high_res.search_new_art_page(
+            context,
+            high_res.NEW_ART_SOURCE_MPCFILL,
+            backend_url="https://example.com/",
+            min_dpi=300,
+            max_dpi=1200,
+            search_text="",
+            search_mode="artist",
+            fetch_json=lambda url, body=None, headers=None: {"cards": []},
+        )
+    except ValueError as exc:
+        assert "artist name" in str(exc)
+    else:
+        raise AssertionError("Expected artist-mode search to require input")
+
+
 def test_search_high_res_page_uses_in_memory_cache(monkeypatch):
     high_res.clear_all_high_res_caches()
     calls = []
@@ -462,6 +773,7 @@ def test_apply_high_res_candidate_writes_bytes_and_tracks_override(tmp_path):
     assert (tmp_path / "scryfall_eld_59_opt.png").read_bytes() == expected
     assert print_dict["high_res_front_overrides"] == {
         "scryfall_eld_59_opt.png": {
+            "art_source": "mpcfill",
             "identifier": "drive123",
             "name": "Opt",
             "dpi": 1200,
@@ -473,6 +785,35 @@ def test_apply_high_res_candidate_writes_bytes_and_tracks_override(tmp_path):
             "medium_thumbnail_url": "https://thumb/medium",
         }
     }
+
+
+def test_apply_high_res_candidate_crops_mpcfill_art_before_writing(monkeypatch, tmp_path):
+    candidate = high_res.HighResCandidate(
+        identifier="drive123",
+        name="Opt",
+        dpi=1200,
+        extension="png",
+        download_link="https://download/opt.png",
+        small_thumbnail_url="https://thumb/small",
+        medium_thumbnail_url="https://thumb/medium",
+        source_id=7,
+        source_name="Test Source",
+    )
+    monkeypatch.setattr(high_res.image, "image_from_bytes", lambda _data: "decoded-image")
+    monkeypatch.setattr(high_res.image, "crop_image", lambda *_args, **_kwargs: "cropped-image")
+    monkeypatch.setattr(high_res.image, "image_to_bytes", lambda image_value: b"cropped-bytes" if image_value == "cropped-image" else b"other")
+
+    print_dict = {"high_res_front_overrides": {}}
+    high_res.apply_high_res_candidate(
+        print_dict,
+        str(tmp_path),
+        "scryfall_eld_59_opt.png",
+        candidate,
+        fetch_bytes=lambda _url: VALID_PNG_BYTES,
+    )
+
+    assert (tmp_path / "scryfall_eld_59_opt.png").read_bytes() == b"cropped-bytes"
+    assert print_dict["high_res_front_overrides"]["scryfall_eld_59_opt.png"]["art_source"] == "mpcfill"
 
 
 def test_download_high_res_image_falls_back_to_drive_identifier():
@@ -550,6 +891,50 @@ def test_get_double_faced_back_context_uses_scryfall_faces():
     assert back_context is not None
     assert back_context.filename == "__scryfall_mid_1_insectile-aberration.png"
     assert back_context.query == "Insectile Aberration"
+
+
+def test_maybe_find_matching_backside_uses_scryfall_candidate_back_link():
+    print_dict = {
+        "backsides": {"scryfall_mid_1_delver-of-secrets.png": "__scryfall_mid_1_insectile-aberration.png"}
+    }
+    front_context = high_res.CardContext(
+        filename="scryfall_mid_1_delver-of-secrets.png",
+        query="Delver of Secrets",
+        display_name="Delver of Secrets",
+        set_code="mid",
+        collector_number="1",
+    )
+    front_candidate = high_res.HighResCandidate(
+        identifier="front123",
+        name="Delver of Secrets",
+        dpi=0,
+        extension="png",
+        download_link="https://cards.scryfall.io/png/front.png",
+        small_thumbnail_url="https://cards.scryfall.io/small/front.jpg",
+        medium_thumbnail_url="https://cards.scryfall.io/large/front.jpg",
+        source_id=0,
+        source_name="Scryfall",
+        art_source=high_res.NEW_ART_SOURCE_SCRYFALL,
+        set_code="mid",
+        collector_number="1",
+        back_identifier="front123:back",
+        back_download_link="https://cards.scryfall.io/png/back.png",
+        back_small_thumbnail_url="https://cards.scryfall.io/small/back.jpg",
+        back_medium_thumbnail_url="https://cards.scryfall.io/large/back.jpg",
+    )
+
+    result = high_res.maybe_find_matching_backside(
+        print_dict,
+        "scryfall_mid_1_delver-of-secrets.png",
+        front_context,
+        front_candidate,
+        "",
+    )
+
+    assert result is not None
+    assert result.filename == "__scryfall_mid_1_insectile-aberration.png"
+    assert result.candidate.download_link == "https://cards.scryfall.io/png/back.png"
+    assert result.candidate.art_source == high_res.NEW_ART_SOURCE_SCRYFALL
 
 
 def test_find_matching_backside_candidate_prefers_same_source_and_name():

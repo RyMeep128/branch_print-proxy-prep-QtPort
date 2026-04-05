@@ -102,6 +102,7 @@ class CardMetadata:
 
 @dataclass
 class HighResOverride:
+    art_source: str | None = None
     identifier: str | None = None
     name: str | None = None
     dpi: int | None = None
@@ -113,6 +114,8 @@ class HighResOverride:
     medium_thumbnail_url: str | None = None
     back_identifier: str | None = None
     back_download_link: str | None = None
+    set_code: str | None = None
+    collector_number: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -121,6 +124,7 @@ class HighResOverride:
         dpi = data.pop("dpi", None)
         source_id = data.pop("source_id", None)
         return cls(
+            art_source=_optional_str(data.pop("art_source", None)),
             identifier=_optional_str(data.pop("identifier", None)),
             name=_optional_str(data.pop("name", None)),
             dpi=_optional_int(dpi),
@@ -132,12 +136,15 @@ class HighResOverride:
             medium_thumbnail_url=_optional_str(data.pop("medium_thumbnail_url", None)),
             back_identifier=_optional_str(data.pop("back_identifier", None)),
             back_download_link=_optional_str(data.pop("back_download_link", None)),
+            set_code=_optional_str(data.pop("set_code", None)),
+            collector_number=_optional_str(data.pop("collector_number", None)),
             extras=data,
         )
 
     def to_dict(self) -> dict[str, Any]:
         result = dict(self.extras)
         fields = {
+            "art_source": self.art_source,
             "identifier": self.identifier,
             "name": self.name,
             "dpi": self.dpi,
@@ -149,6 +156,8 @@ class HighResOverride:
             "medium_thumbnail_url": self.medium_thumbnail_url,
             "back_identifier": self.back_identifier,
             "back_download_link": self.back_download_link,
+            "set_code": self.set_code,
+            "collector_number": self.collector_number,
         }
         for key, value in fields.items():
             if value is not None:

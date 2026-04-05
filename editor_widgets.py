@@ -52,6 +52,7 @@ from models import ProjectState, as_project_state
 from util import inch_to_mm, mm_to_inch, open_folder, point_to_inch
 from background_tasks import make_popup_print_fn, popup
 from dialogs import (
+    AddCardDialog,
     ComboBoxWithLabel,
     DeckImportDialog,
     FileDialogType,
@@ -352,7 +353,7 @@ class CardWidget(QWidget):
             img_data = fallback.data
             img_size = fallback.size
         img = CardImage(img_data, img_size)
-        img.setToolTip("Click to choose a higher-resolution front image")
+        img.setToolTip("Click to choose new front art")
 
         def open_high_res_picker():
             dialog = HighResPickerDialog(self, state, img_dict, card_name)
@@ -381,8 +382,10 @@ class CardWidget(QWidget):
         number_edit.setText(str(initial_number))
         number_edit.setFixedWidth(40)
 
-        decrement_button = QPushButton("Remove 1")
-        increment_button = QPushButton("Add 1")
+        decrement_button = QPushButton("-")
+        increment_button = QPushButton("+")
+        decrement_button.setFixedWidth(32)
+        increment_button.setFixedWidth(32)
 
         decrement_button.setToolTip("Remove one copy")
         increment_button.setToolTip("Add one copy")
@@ -522,24 +525,6 @@ class CardWidget(QWidget):
         if backside_enabled or oversized_enabled:
             extra_options = []
 
-            if backside_enabled:
-                is_short_edge = (
-                    state.backside_short_edge[card_name]
-                    if card_name in state.backside_short_edge
-                    else False
-                )
-                short_edge_checkbox = QCheckBox("Flip on Short Edge")
-                short_edge_checkbox.setChecked(is_short_edge)
-                short_edge_checkbox.setToolTip(
-                    "Turn this on if the back should flip on the short edge"
-                )
-
-                short_edge_checkbox.checkStateChanged.connect(
-                    functools.partial(self.toggle_short_edge, state)
-                )
-
-                extra_options.append(short_edge_checkbox)
-
             if oversized_enabled:
                 is_oversized = (
                     state.oversized[card_name]
@@ -558,18 +543,21 @@ class CardWidget(QWidget):
 
                 extra_options.append(oversized_checkbox)
 
-            extra_options_layout = QHBoxLayout()
-            extra_options_layout.addStretch()
-            for opt in extra_options:
-                extra_options_layout.addWidget(opt)
-            extra_options_layout.addStretch()
-            extra_options_layout.setContentsMargins(0, 0, 0, 0)
+            if extra_options:
+                extra_options_layout = QHBoxLayout()
+                extra_options_layout.addStretch()
+                for opt in extra_options:
+                    extra_options_layout.addWidget(opt)
+                extra_options_layout.addStretch()
+                extra_options_layout.setContentsMargins(0, 0, 0, 0)
 
-            extra_options_area = QWidget()
-            extra_options_area.setLayout(extra_options_layout)
-            extra_options_area.setFixedHeight(20)
+                extra_options_area = QWidget()
+                extra_options_area.setLayout(extra_options_layout)
+                extra_options_area.setFixedHeight(20)
 
-            self._extra_options_area = extra_options_area
+                self._extra_options_area = extra_options_area
+            else:
+                self._extra_options_area = None
         else:
             self._extra_options_area = None
 
@@ -1175,10 +1163,12 @@ class ActionsWidget(QGroupBox):
         set_images_button = QPushButton("Choose Image Folder")
         open_images_button = QPushButton("Open Images")
         settings_button = QPushButton("Settings")
+        add_card_button = QPushButton("Add Card")
         import_decklist_button = QPushButton("Import Cards")
         clear_cards_button = QPushButton("Remove Old Card Images")
 
         for button in [
+            add_card_button,
             import_decklist_button,
             cropper_button,
             render_button,
@@ -1209,6 +1199,7 @@ class ActionsWidget(QGroupBox):
         subtle_heading_style = "font-size: 13px; font-weight: bold;"
         subtle_description_style = "color: #666666;"
 
+        add_card_button.setStyleSheet(primary_button_style)
         import_decklist_button.setStyleSheet(primary_button_style)
         cropper_button.setStyleSheet(primary_button_style)
         render_button.setStyleSheet(primary_button_style)
@@ -1223,6 +1214,7 @@ class ActionsWidget(QGroupBox):
             set_images_button,
             open_images_button,
             settings_button,
+            add_card_button,
             import_decklist_button,
             clear_cards_button,
         ]
@@ -1274,7 +1266,8 @@ class ActionsWidget(QGroupBox):
         cards_grid = QGridLayout()
         cards_grid.setColumnMinimumWidth(0, minimum_width + 10)
         cards_grid.setColumnMinimumWidth(1, minimum_width + 10)
-        cards_grid.addWidget(import_decklist_button, 0, 0, 1, 2)
+        cards_grid.addWidget(add_card_button, 0, 0)
+        cards_grid.addWidget(import_decklist_button, 0, 1)
         cards_grid.addWidget(set_images_button, 1, 0, 1, 2)
         cards_grid.addWidget(cropper_button, 2, 0, 1, 2)
 
@@ -1490,6 +1483,68 @@ class ActionsWidget(QGroupBox):
             ):
                 self.window().refresh_preview(state, img_dict)
 
+        def add_single_card():
+            dialog = AddCardDialog(self, state.image_dir)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            selected_card = dialog.selected_card()
+            if selected_card is None:
+                return
+
+            workflow_result = None
+            add_error = None
+
+            def add_work():
+                nonlocal workflow_result, add_error
+                try:
+                    workflow_result = deck_import_service.import_single_card_into_project(
+                        state,
+                        img_dict,
+                        state.image_dir,
+                        selected_card,
+                        make_popup_print_fn(add_window),
+                        warn_fn=application.warn_nonfatal,
+                        art_candidate=dialog.selected_art_candidate(),
+                        art_source=dialog.selected_art_source(),
+                        backend_url=CFG.HighResBackendURL,
+                    )
+                except (OSError, ValueError) as exc:
+                    add_error = exc
+
+            self.window().setEnabled(False)
+            add_window = popup(
+                self.window(), "Adding card...", application._debug_mode
+            )
+            add_window.show_during_work(add_work)
+            del add_window
+            self.window().setEnabled(True)
+
+            if workflow_result is not None or add_error is not None:
+                self.window().refresh(state, img_dict)
+
+            if add_error is not None:
+                application.warn_nonfatal("Add Card Failed", str(add_error))
+                return
+
+            if workflow_result is None:
+                return
+
+            art_message = (
+                "Custom art was applied."
+                if workflow_result.art_candidate is not None
+                else "Default Scryfall art was kept."
+            )
+            QMessageBox.information(
+                self,
+                "Card Added",
+                (
+                    f"Added `{workflow_result.selected_card.name}` with quantity 1.\n\n"
+                    f"{art_message}\n\n"
+                    "Next step: click 'Prepare Images' if needed, then check the Preview tab."
+                ),
+            )
+
         def import_decklist_images():
             dialog = DeckImportDialog(self, state.image_dir)
             if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1601,6 +1656,7 @@ class ActionsWidget(QGroupBox):
         set_images_button.clicked.connect(set_images_folder)
         open_images_button.clicked.connect(open_images_folder)
         settings_button.clicked.connect(open_settings)
+        add_card_button.clicked.connect(add_single_card)
         import_decklist_button.clicked.connect(import_decklist_images)
         clear_cards_button.clicked.connect(clear_old_cards)
 

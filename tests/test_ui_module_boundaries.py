@@ -6,6 +6,7 @@ def test_dialogs_exports_real_helpers():
     assert callable(dialogs.load_project_file)
     assert callable(dialogs.delete_project_with_confirmation)
     assert callable(dialogs.remove_card_from_project_state)
+    assert dialogs.AddCardDialog.__module__ == "dialogs"
     assert dialogs.HighResPickerDialog.__module__ == "dialogs"
 
 

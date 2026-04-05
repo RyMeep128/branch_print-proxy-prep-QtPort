@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import high_res
@@ -18,6 +18,10 @@ class HighResApplyWorkflowResult:
 
 def build_card_context(card_name: str, project_like) -> high_res.CardContext:
     return high_res.build_card_context(card_name, as_project_state(project_like))
+
+
+def search_new_art_page(*args, **kwargs):
+    return high_res.search_new_art_page(*args, **kwargs)
 
 
 def search_high_res_page(*args, **kwargs):
@@ -51,11 +55,15 @@ def apply_candidate_to_project(
     img_dict: dict,
     card_name: str,
     candidate: high_res.HighResCandidate,
+    source: str,
     backend_url: str,
     print_fn: Callable[[str], None],
     warn_fn: Callable[[str, str], None] | None = None,
 ) -> HighResApplyWorkflowResult:
     state = as_project_state(state)
+    normalized_source = (source or candidate.art_source or high_res.NEW_ART_SOURCE_MPCFILL).strip().casefold()
+    if candidate.art_source != normalized_source:
+        candidate = replace(candidate, art_source=normalized_source)
     context = build_card_context(card_name, state)
     backside_match = high_res.maybe_find_matching_backside(
         state,

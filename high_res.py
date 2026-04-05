@@ -14,6 +14,7 @@ from typing import Callable
 
 from config import CFG
 from constants import cwd
+import image
 from image import image_from_bytes
 from models import ProjectState, as_project_state
 import util
@@ -41,6 +42,10 @@ GOOGLE_DRIVE_IMAGE_API_URL = (
     "https://script.google.com/macros/s/"
     "AKfycbw8laScKBfxda2Wb0g63gkYDBdy8NWNxINoC4xDOwnCQ3JMFdruam1MdmNmN4wI5k4/exec"
 )
+
+NEW_ART_SOURCE_MPCFILL = "mpcfill"
+NEW_ART_SOURCE_SCRYFALL = "scryfall"
+SCRYFALL_SOURCE_NAME = "Scryfall"
 
 MPCFILL_SOURCE_IDS = (
     list(range(1, 44))
@@ -73,6 +78,14 @@ class HighResCandidate:
     medium_thumbnail_url: str
     source_id: int
     source_name: str
+    art_source: str = NEW_ART_SOURCE_MPCFILL
+    set_code: str | None = None
+    set_name: str | None = None
+    collector_number: str | None = None
+    back_identifier: str = ""
+    back_download_link: str = ""
+    back_small_thumbnail_url: str = ""
+    back_medium_thumbnail_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -282,22 +295,27 @@ def _clear_disk_cache(kind: str):
 
 
 def _build_search_cache_key(
+    source: str,
     backend_url: str,
-    query: str,
+    context: CardContext,
     min_dpi: int,
     max_dpi: int,
     page_start: int,
     page_size: int,
     source_ids: list[int] | None,
 ) -> tuple:
+    normalized_source = source.strip().casefold()
     return (
+        normalized_source,
         _standardize_url(backend_url).strip().lower(),
-        query.strip().casefold(),
+        context.query.strip().casefold(),
+        (context.set_code or "").strip().casefold(),
+        (context.collector_number or "").strip().casefold(),
         int(min_dpi),
         int(max_dpi),
         int(page_start),
         int(page_size),
-        tuple(source_ids or MPCFILL_SOURCE_IDS),
+        tuple(source_ids or (MPCFILL_SOURCE_IDS if normalized_source == NEW_ART_SOURCE_MPCFILL else ())),
     )
 
 
@@ -342,6 +360,14 @@ def _search_page_payload(page: "HighResSearchPage") -> dict:
                 "medium_thumbnail_url": candidate.medium_thumbnail_url,
                 "source_id": candidate.source_id,
                 "source_name": candidate.source_name,
+                "art_source": candidate.art_source,
+                "set_code": candidate.set_code,
+                "set_name": candidate.set_name,
+                "collector_number": candidate.collector_number,
+                "back_identifier": candidate.back_identifier,
+                "back_download_link": candidate.back_download_link,
+                "back_small_thumbnail_url": candidate.back_small_thumbnail_url,
+                "back_medium_thumbnail_url": candidate.back_medium_thumbnail_url,
             }
             for candidate in page.candidates
         ],
@@ -361,6 +387,14 @@ def _search_page_from_payload(payload: dict) -> "HighResSearchPage":
                 medium_thumbnail_url=candidate.get("medium_thumbnail_url", ""),
                 source_id=int(candidate.get("source_id", 0)),
                 source_name=candidate.get("source_name", ""),
+                art_source=candidate.get("art_source", NEW_ART_SOURCE_MPCFILL),
+                set_code=candidate.get("set_code"),
+                set_name=candidate.get("set_name"),
+                collector_number=candidate.get("collector_number"),
+                back_identifier=candidate.get("back_identifier", ""),
+                back_download_link=candidate.get("back_download_link", ""),
+                back_small_thumbnail_url=candidate.get("back_small_thumbnail_url", ""),
+                back_medium_thumbnail_url=candidate.get("back_medium_thumbnail_url", ""),
             )
             for candidate in payload.get("candidates", [])
             if candidate.get("identifier")
@@ -617,7 +651,25 @@ def build_search_payload(
     }
 
 
-def search_high_res_page(
+def _extension_from_url(url: str, default: str = "png") -> str:
+    path = urllib.parse.urlparse(url or "").path
+    _, ext = os.path.splitext(path)
+    normalized = ext.lstrip(".").lower()
+    return normalized or default
+
+
+def _scryfall_error_message(payload: dict, fallback: str) -> str:
+    if payload.get("object") == "error":
+        return str(payload.get("details") or payload.get("code") or fallback)
+    return fallback
+
+
+def _require_scryfall_success(payload: dict, fallback: str):
+    if payload.get("object") == "error":
+        raise ValueError(_scryfall_error_message(payload, fallback))
+
+
+def _build_mpcfill_search_page(
     context: CardContext,
     backend_url: str,
     min_dpi: int,
@@ -625,20 +677,33 @@ def search_high_res_page(
     page_start: int = 0,
     page_size: int = 60,
     source_ids: list[int] | None = None,
+    search_text: str | None = None,
+    search_mode: str = "name",
     fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
 ) -> HighResSearchPage:
     validate_backend_url(backend_url)
     fetch_json = fetch_json or _fetch_json
+    normalized_mode = (search_mode or "name").strip().casefold()
+    query_text = (search_text or "").strip()
+    if normalized_mode == "artist" and not query_text:
+        raise ValueError("Enter an artist name before searching MPCFill by artist.")
+    active_query = query_text or context.query
     cache_key = _build_search_cache_key(
+        NEW_ART_SOURCE_MPCFILL,
         backend_url,
-        context.query,
+        CardContext(
+            filename=context.filename,
+            query=active_query,
+            display_name=context.display_name,
+            set_code=context.set_code,
+            collector_number=context.collector_number,
+        ),
         min_dpi,
         max_dpi,
         page_start,
         page_size,
         source_ids,
     )
-    now = time.time()
     if fetch_json is _fetch_json:
         cached_page = _SEARCH_PAGE_CACHE.get(cache_key)
         if cached_page is not None:
@@ -650,7 +715,7 @@ def search_high_res_page(
             return cached_page
 
     payload = build_search_payload(
-        context.query,
+        active_query,
         min_dpi,
         max_dpi,
         page_size=page_size,
@@ -671,6 +736,7 @@ def search_high_res_page(
             medium_thumbnail_url=card.get("mediumThumbnailUrl", ""),
             source_id=int(card.get("sourceId", 0)),
             source_name=card.get("sourceName", ""),
+            art_source=NEW_ART_SOURCE_MPCFILL,
         )
         for card in cards
         if card.get("identifier")
@@ -687,6 +753,227 @@ def search_high_res_page(
     return result
 
 
+def _extract_scryfall_face_image_uris(card_data: dict, face_index: int = 0) -> tuple[str, dict]:
+    faces = card_data.get("card_faces") or []
+    if faces:
+        face = faces[face_index] if face_index < len(faces) else {}
+        return face.get("name") or card_data.get("name", "Card"), face.get("image_uris") or {}
+    return card_data.get("name", "Card"), card_data.get("image_uris") or {}
+
+
+def _make_scryfall_candidate(card_data: dict) -> HighResCandidate | None:
+    front_name, front_uris = _extract_scryfall_face_image_uris(card_data, 0)
+    download_link = front_uris.get("png") or front_uris.get("large") or front_uris.get("normal")
+    if not download_link:
+        return None
+
+    _back_name, back_uris = _extract_scryfall_face_image_uris(card_data, 1)
+    identifier = str(card_data.get("id") or card_data.get("oracle_id") or download_link)
+    return HighResCandidate(
+        identifier=identifier,
+        name=front_name,
+        dpi=0,
+        extension=_extension_from_url(download_link),
+        download_link=download_link,
+        small_thumbnail_url=front_uris.get("small") or front_uris.get("normal") or "",
+        medium_thumbnail_url=front_uris.get("large") or front_uris.get("normal") or "",
+        source_id=0,
+        source_name=SCRYFALL_SOURCE_NAME,
+        art_source=NEW_ART_SOURCE_SCRYFALL,
+        set_code=(card_data.get("set") or "").lower() or None,
+        set_name=str(card_data.get("set_name") or "") or None,
+        collector_number=str(card_data.get("collector_number") or "") or None,
+        back_identifier=(identifier + ":back") if back_uris else "",
+        back_download_link=back_uris.get("png") or back_uris.get("large") or back_uris.get("normal") or "",
+        back_small_thumbnail_url=back_uris.get("small") or back_uris.get("normal") or "",
+        back_medium_thumbnail_url=back_uris.get("large") or back_uris.get("normal") or "",
+    )
+
+
+def _fetch_scryfall_print_payloads(
+    context: CardContext,
+    fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict],
+) -> tuple[list[dict], int]:
+    lookup_payload = fetch_json(_build_scryfall_lookup_url(context))
+    _require_scryfall_success(lookup_payload, "Scryfall lookup failed.")
+
+    if lookup_payload.get("object") == "list":
+        cards = lookup_payload.get("data") or []
+        return cards, int(lookup_payload.get("total_cards", len(cards)))
+
+    prints_search_uri = lookup_payload.get("prints_search_uri")
+    if not prints_search_uri:
+        return [lookup_payload], 1
+
+    cards = []
+    total_count = 0
+    next_url = prints_search_uri
+    while next_url:
+        payload = fetch_json(next_url)
+        _require_scryfall_success(payload, "Scryfall print search failed.")
+        if payload.get("object") != "list":
+            cards = [payload]
+            total_count = 1
+            break
+        cards.extend(payload.get("data") or [])
+        total_count = int(payload.get("total_cards", len(cards)))
+        if not payload.get("has_more"):
+            break
+        next_url = payload.get("next_page") or ""
+    return cards, total_count or len(cards)
+
+
+def _build_scryfall_search_page(
+    context: CardContext,
+    page_start: int = 0,
+    page_size: int = 60,
+    set_filter: str | None = None,
+    fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
+) -> HighResSearchPage:
+    fetch_json = fetch_json or _fetch_json
+    normalized_set_filter = (set_filter or "").strip()
+    cache_key = _build_search_cache_key(
+        NEW_ART_SOURCE_SCRYFALL,
+        "",
+        CardContext(
+            filename=context.filename,
+            query=context.query,
+            display_name=context.display_name,
+            set_code=(context.set_code or "") if not normalized_set_filter else normalized_set_filter,
+            collector_number=context.collector_number,
+        ),
+        0,
+        0,
+        page_start,
+        page_size,
+        None,
+    )
+    if fetch_json is _fetch_json:
+        cached_page = _SEARCH_PAGE_CACHE.get(cache_key)
+        if cached_page is not None:
+            return cached_page
+        cached_payload = _read_disk_json_cache("search", cache_key)
+        if cached_payload is not None:
+            cached_page = _search_page_from_payload(cached_payload)
+            _SEARCH_PAGE_CACHE.set(cache_key, cached_page, _page_size_bytes(cached_page))
+            return cached_page
+
+    cards, total_count = _fetch_scryfall_print_payloads(
+        context,
+        fetch_json=fetch_json,
+    )
+    all_candidates = [candidate for candidate in (_make_scryfall_candidate(card) for card in cards) if candidate is not None]
+    if normalized_set_filter:
+        lowered_filter = normalized_set_filter.casefold()
+        all_candidates = [
+            candidate
+            for candidate in all_candidates
+            if (candidate.set_code or "").casefold() == lowered_filter
+            or lowered_filter in (candidate.set_name or "").casefold()
+        ]
+    sliced_candidates = all_candidates[max(0, int(page_start)) : max(0, int(page_start)) + max(1, int(page_size))]
+    result = HighResSearchPage(
+        candidates=sliced_candidates,
+        total_count=len(all_candidates) if normalized_set_filter else max(total_count, len(all_candidates)),
+        page_start=max(0, int(page_start)),
+        page_size=max(1, int(page_size)),
+    )
+    if fetch_json is _fetch_json:
+        _SEARCH_PAGE_CACHE.set(cache_key, result, _page_size_bytes(result))
+        _write_disk_json_cache("search", cache_key, _search_page_payload(result))
+    return result
+
+
+def search_new_art_page(
+    context: CardContext,
+    source: str,
+    backend_url: str = "",
+    min_dpi: int = 0,
+    max_dpi: int = 0,
+    page_start: int = 0,
+    page_size: int = 60,
+    source_ids: list[int] | None = None,
+    search_text: str | None = None,
+    search_mode: str = "name",
+    set_filter: str | None = None,
+    fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
+) -> HighResSearchPage:
+    normalized_source = (source or NEW_ART_SOURCE_MPCFILL).strip().casefold()
+    if normalized_source == NEW_ART_SOURCE_SCRYFALL:
+        return _build_scryfall_search_page(
+            context,
+            page_start=page_start,
+            page_size=page_size,
+            set_filter=set_filter,
+            fetch_json=fetch_json,
+        )
+    return _build_mpcfill_search_page(
+        context,
+        backend_url,
+        min_dpi,
+        max_dpi,
+        page_start=page_start,
+        page_size=page_size,
+        source_ids=source_ids,
+        search_text=search_text,
+        search_mode=search_mode,
+        fetch_json=fetch_json,
+    )
+
+
+def search_new_art_candidates(
+    context: CardContext,
+    source: str,
+    backend_url: str = "",
+    min_dpi: int = 0,
+    max_dpi: int = 0,
+    page_start: int = 0,
+    page_size: int = 60,
+    source_ids: list[int] | None = None,
+    search_text: str | None = None,
+    search_mode: str = "name",
+    set_filter: str | None = None,
+    fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
+) -> list[HighResCandidate]:
+    return search_new_art_page(
+        context,
+        source,
+        backend_url,
+        min_dpi,
+        max_dpi,
+        page_start=page_start,
+        page_size=page_size,
+        source_ids=source_ids,
+        search_text=search_text,
+        search_mode=search_mode,
+        set_filter=set_filter,
+        fetch_json=fetch_json,
+    ).candidates
+
+
+def search_high_res_page(
+    context: CardContext,
+    backend_url: str,
+    min_dpi: int,
+    max_dpi: int,
+    page_start: int = 0,
+    page_size: int = 60,
+    source_ids: list[int] | None = None,
+    fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
+) -> HighResSearchPage:
+    return search_new_art_page(
+        context,
+        NEW_ART_SOURCE_MPCFILL,
+        backend_url,
+        min_dpi,
+        max_dpi,
+        page_start=page_start,
+        page_size=page_size,
+        source_ids=source_ids,
+        fetch_json=fetch_json,
+    )
+
+
 def search_high_res_candidates(
     context: CardContext,
     backend_url: str,
@@ -697,8 +984,9 @@ def search_high_res_candidates(
     source_ids: list[int] | None = None,
     fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
 ) -> list[HighResCandidate]:
-    return search_high_res_page(
+    return search_new_art_candidates(
         context,
+        NEW_ART_SOURCE_MPCFILL,
         backend_url,
         min_dpi,
         max_dpi,
@@ -706,7 +994,7 @@ def search_high_res_candidates(
         page_size=page_size,
         source_ids=source_ids,
         fetch_json=fetch_json,
-    ).candidates
+    )
 
 
 def download_high_res_image(
@@ -908,6 +1196,27 @@ def maybe_find_matching_backside(
     backend_url: str,
     fetch_json: Callable[[str, dict | None, dict[str, str] | None], dict] | None = None,
 ) -> BacksideMatch | None:
+    if front_candidate.art_source == NEW_ART_SOURCE_SCRYFALL:
+        state = as_project_state(print_dict)
+        backside_name = state.backsides.get(card_name)
+        if not backside_name or not front_candidate.back_download_link:
+            return None
+        backside_candidate = HighResCandidate(
+            identifier=front_candidate.back_identifier or (front_candidate.identifier + ":back"),
+            name=_guess_name_from_filename(backside_name),
+            dpi=0,
+            extension=_extension_from_url(front_candidate.back_download_link),
+            download_link=front_candidate.back_download_link,
+            small_thumbnail_url=front_candidate.back_small_thumbnail_url,
+            medium_thumbnail_url=front_candidate.back_medium_thumbnail_url,
+            source_id=front_candidate.source_id,
+            source_name=front_candidate.source_name,
+            art_source=NEW_ART_SOURCE_SCRYFALL,
+            set_code=front_candidate.set_code,
+            collector_number=front_candidate.collector_number,
+        )
+        return BacksideMatch(filename=backside_name, candidate=backside_candidate)
+
     state = as_project_state(print_dict)
     back_context = get_double_faced_back_context(
         state,
@@ -930,6 +1239,46 @@ def maybe_find_matching_backside(
     return BacksideMatch(filename=back_context.filename, candidate=candidate)
 
 
+def _prepare_bytes_for_source(card_name: str, candidate: HighResCandidate, image_bytes: bytes) -> bytes:
+    normalized_source = (candidate.art_source or NEW_ART_SOURCE_MPCFILL).strip().casefold()
+    if normalized_source == NEW_ART_SOURCE_MPCFILL:
+        decoded = image.image_from_bytes(image_bytes)
+        cropped = image.crop_image(decoded, card_name, None, None)
+        original_shape = getattr(decoded, "shape", None)
+        cropped_shape = getattr(cropped, "shape", None)
+        if original_shape is not None and cropped_shape == original_shape:
+            return image_bytes
+        return image.image_to_bytes(cropped)
+
+    if normalized_source == NEW_ART_SOURCE_SCRYFALL and not image.is_pre_cropped_image_name(card_name):
+        decoded = image.image_from_bytes(image_bytes)
+        uncropped = image.uncrop_image(decoded, card_name)
+        return image.image_to_bytes(uncropped)
+
+    return image_bytes
+
+
+def _build_override_payload(candidate: HighResCandidate, backside_match: BacksideMatch | None = None) -> dict:
+    override = {
+        "art_source": candidate.art_source,
+        "identifier": candidate.identifier,
+        "name": candidate.name,
+        "dpi": candidate.dpi,
+        "extension": candidate.extension,
+        "download_link": candidate.download_link,
+        "source_id": candidate.source_id,
+        "source_name": candidate.source_name,
+        "small_thumbnail_url": candidate.small_thumbnail_url,
+        "medium_thumbnail_url": candidate.medium_thumbnail_url,
+        "set_code": candidate.set_code,
+        "collector_number": candidate.collector_number,
+    }
+    if backside_match is not None:
+        override["back_identifier"] = backside_match.candidate.identifier
+        override["back_download_link"] = backside_match.candidate.download_link
+    return override
+
+
 def apply_high_res_candidate(
     print_dict: ProjectState | dict,
     image_dir: str,
@@ -946,6 +1295,7 @@ def apply_high_res_candidate(
         fetch_bytes,
         fetch_text,
     )
+    image_bytes = _prepare_bytes_for_source(card_name, candidate, image_bytes)
     backside_bytes = None
 
     if backside_match is not None:
@@ -954,6 +1304,11 @@ def apply_high_res_candidate(
             backside_match.candidate.download_link,
             fetch_bytes,
             fetch_text,
+        )
+        backside_bytes = _prepare_bytes_for_source(
+            backside_match.filename,
+            backside_match.candidate,
+            backside_bytes,
         )
 
     path = os.path.join(image_dir, card_name)
@@ -967,19 +1322,5 @@ def apply_high_res_candidate(
             fp.write(backside_bytes)
         invalidate_cached_card_artifacts(state, image_dir, backside_match.filename)
 
-    override = {
-        "identifier": candidate.identifier,
-        "name": candidate.name,
-        "dpi": candidate.dpi,
-        "extension": candidate.extension,
-        "download_link": candidate.download_link,
-        "source_id": candidate.source_id,
-        "source_name": candidate.source_name,
-        "small_thumbnail_url": candidate.small_thumbnail_url,
-        "medium_thumbnail_url": candidate.medium_thumbnail_url,
-    }
-    if backside_match is not None:
-        override["back_identifier"] = backside_match.candidate.identifier
-        override["back_download_link"] = backside_match.candidate.download_link
-    state.set_high_res_override(card_name, override)
+    state.set_high_res_override(card_name, _build_override_payload(candidate, backside_match))
     return _sync_legacy_project_dict(print_dict, state)

@@ -400,7 +400,7 @@ def test_delete_card_files_removes_source_crop_and_cache_entries(tmp_path):
     cache_data = json.loads(img_cache.read_text(encoding="utf-8"))
     assert card_name not in cache_data
     assert cache_data["other.png"] == {"data": "keep"}
-    assert img_dict == {"__back.jpg": {"size": [1, 1], "data": "b''"}}
+    assert img_dict == {"other.png": {"data": "keep"}}
     assert json.loads(img_cache.read_text(encoding="utf-8")) == img_dict
 
 
